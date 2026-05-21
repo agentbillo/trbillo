@@ -69,6 +69,9 @@ document.addEventListener('DOMContentLoaded', () => {
     settingsMembersList: document.getElementById('settings-members-list'),
     themePicker: document.querySelectorAll('.theme-option'),
     myBoardsFilter: document.getElementById('my-boards-filter'),
+    boardsSort: document.getElementById('boards-sort'),
+    settingsBoardIcon: document.getElementById('settings-board-icon'),
+    iconPresets: document.querySelectorAll('.icon-preset'),
 
     cardDetailModal: document.getElementById('card-detail-modal'),
     modalCardTitle: document.getElementById('modal-card-title'),
@@ -91,7 +94,14 @@ document.addEventListener('DOMContentLoaded', () => {
     modalCardAssignees: document.getElementById('modal-card-assignees'),
     toggleAssigneeMenuBtn: document.getElementById('toggle-assignee-menu-btn'),
     assigneeMenuDropdown: document.getElementById('assignee-menu-dropdown'),
-    deleteCardBtn: document.getElementById('delete-card-btn')
+    deleteCardBtn: document.getElementById('delete-card-btn'),
+
+    // Copy Board
+    copyBoardBtn: document.getElementById('copy-board-btn'),
+    copyBoardModal: document.getElementById('copy-board-modal'),
+    copyBoardForm: document.getElementById('copy-board-form'),
+    copyBoardName: document.getElementById('copy-board-name'),
+    copyBoardIncludeMembers: document.getElementById('copy-board-include-members')
   };
 
   // --- API CALLS (AJAX) ---
@@ -134,6 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
     inviteMember: (boardId, usernameOrEmail) => api.request(`/api/boards/${boardId}/members`, 'POST', { username_or_email: usernameOrEmail }),
     removeMember: (boardId, userId) => api.request(`/api/boards/${boardId}/members/${userId}`, 'DELETE'),
     getCollaborators: (boardId) => api.request(`/api/boards/${boardId}/collaborators`, 'GET'),
+    copyBoard: (boardId, name, includeMembers) => api.request(`/api/boards/${boardId}/copy`, 'POST', { name, include_members: includeMembers }),
 
     // Lists
     createList: (boardId, name, position) => api.request(`/api/boards/${boardId}/lists`, 'POST', { name, position }),
@@ -180,6 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupModalLightDismissFallback(el.createBoardModal);
     setupModalLightDismissFallback(el.inviteMemberModal);
     setupModalLightDismissFallback(el.boardSettingsModal);
+    setupModalLightDismissFallback(el.copyBoardModal);
   }
 
   // Fallback for browsers that do not support <dialog closedby="any">
@@ -224,6 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.activityLogToggle.classList.add('hidden');
     el.boardSettingsBtn.classList.add('hidden');
     el.deleteBoardBtn.classList.add('hidden');
+    el.copyBoardBtn.classList.add('hidden');
 
     // Reset theme to dark when no board selected
     applyTheme('dark');
@@ -265,19 +278,38 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderBoardsList() {
     el.boardsList.innerHTML = '';
     const showMyBoardsOnly = el.myBoardsFilter && el.myBoardsFilter.checked;
+    const sortOption = el.boardsSort ? el.boardsSort.value : 'updated-desc';
 
-    state.boards
-      .filter(board => !showMyBoardsOnly || board.owner_id === state.user.id)
-      .forEach(board => {
-        const li = document.createElement('li');
-        li.innerHTML = `
-          <div class="board-link ${state.activeBoard && state.activeBoard.id === board.id ? 'active' : ''}" data-id="${board.id}">
-            <span class="board-link-icon">📋</span>
-            <span>${escapeHTML(board.name)}</span>
-          </div>
-        `;
-        el.boardsList.appendChild(li);
-      });
+    // Filter boards
+    let filteredBoards = state.boards.filter(board => !showMyBoardsOnly || board.owner_id === state.user.id);
+
+    // Sort boards
+    filteredBoards.sort((a, b) => {
+      switch (sortOption) {
+        case 'updated-desc':
+          return new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at);
+        case 'updated-asc':
+          return new Date(a.updated_at || a.created_at) - new Date(b.updated_at || b.created_at);
+        case 'alpha-asc':
+          return a.name.localeCompare(b.name);
+        case 'alpha-desc':
+          return b.name.localeCompare(a.name);
+        default:
+          return 0;
+      }
+    });
+
+    filteredBoards.forEach(board => {
+      const li = document.createElement('li');
+      const icon = board.icon || '📋';
+      li.innerHTML = `
+        <div class="board-link ${state.activeBoard && state.activeBoard.id === board.id ? 'active' : ''}" data-id="${board.id}">
+          <span class="board-link-icon">${icon}</span>
+          <span>${escapeHTML(board.name)}</span>
+        </div>
+      `;
+      el.boardsList.appendChild(li);
+    });
   }
 
   async function selectBoard(boardId) {
@@ -300,6 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.inviteMemberBtn.classList.remove('hidden');
       el.activityLogToggle.classList.remove('hidden');
       el.boardSettingsBtn.classList.remove('hidden');
+      el.copyBoardBtn.classList.remove('hidden');
       if (board.owner_id === state.user.id) {
         // User owns this board
         el.deleteBoardBtn.classList.remove('hidden');
@@ -580,6 +613,11 @@ document.addEventListener('DOMContentLoaded', () => {
     renderBoardsList();
   });
 
+  // Boards sort selector
+  el.boardsSort.addEventListener('change', () => {
+    renderBoardsList();
+  });
+
   // Select board delegation
   el.boardsList.addEventListener('click', (e) => {
     const link = e.target.closest('.board-link');
@@ -692,6 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
   el.boardSettingsBtn.addEventListener('click', () => {
     el.settingsBoardName.value = state.activeBoard.name;
     el.settingsBoardDesc.value = state.activeBoard.description || '';
+    el.settingsBoardIcon.value = state.activeBoard.icon || '📋';
 
     // Highlight current theme
     const currentTheme = state.activeBoard.theme || 'dark';
@@ -703,6 +742,13 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSettingsMembersList();
 
     el.boardSettingsModal.showModal();
+  });
+
+  // Icon preset clicks
+  el.iconPresets.forEach(btn => {
+    btn.addEventListener('click', () => {
+      el.settingsBoardIcon.value = btn.dataset.icon;
+    });
   });
 
   function renderSettingsMembersList() {
@@ -759,18 +805,19 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     try {
       const selectedTheme = document.querySelector('.theme-option.active')?.dataset.theme || 'dark';
+      const selectedIcon = el.settingsBoardIcon.value || '📋';
       const updatedBoard = await api.updateBoard(state.activeBoard.id, {
         name: el.settingsBoardName.value,
         description: el.settingsBoardDesc.value,
-        theme: selectedTheme
+        theme: selectedTheme,
+        icon: selectedIcon
       });
-
-      console.log('Board update response:', updatedBoard);
 
       // Update local state
       state.activeBoard.name = updatedBoard.name;
       state.activeBoard.description = updatedBoard.description;
       state.activeBoard.theme = updatedBoard.theme;
+      state.activeBoard.icon = updatedBoard.icon;
 
       // Update UI
       el.boardTitle.textContent = updatedBoard.name;
@@ -783,6 +830,8 @@ document.addEventListener('DOMContentLoaded', () => {
         state.boards[boardIdx].name = updatedBoard.name;
         state.boards[boardIdx].description = updatedBoard.description;
         state.boards[boardIdx].theme = updatedBoard.theme;
+        state.boards[boardIdx].icon = updatedBoard.icon;
+        state.boards[boardIdx].updated_at = updatedBoard.updated_at;
       }
 
       // Update sidebar
@@ -811,6 +860,39 @@ document.addEventListener('DOMContentLoaded', () => {
       await loadBoards();
     } catch (err) {
       alert(`Failed to delete board: ${err.message}`);
+    }
+  });
+
+  // Copy Board - open modal
+  el.copyBoardBtn.addEventListener('click', () => {
+    if (!state.activeBoard) return;
+    el.copyBoardName.value = `${state.activeBoard.name} copy`;
+    el.copyBoardIncludeMembers.checked = false;
+    el.copyBoardModal.showModal();
+  });
+
+  // Copy Board - form submit
+  el.copyBoardForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const name = el.copyBoardName.value.trim();
+      const includeMembers = el.copyBoardIncludeMembers.checked;
+
+      if (!name) {
+        alert('Please enter a name for the new board.');
+        return;
+      }
+
+      const newBoard = await api.copyBoard(state.activeBoard.id, name, includeMembers);
+
+      el.copyBoardModal.close();
+
+      // Add the new board to the list and select it
+      state.boards.push(newBoard);
+      renderBoardsList();
+      selectBoard(newBoard.id);
+    } catch (err) {
+      alert(`Failed to copy board: ${err.message}`);
     }
   });
 
@@ -1404,6 +1486,7 @@ document.addEventListener('DOMContentLoaded', () => {
             el.deleteBoardBtn.classList.add('hidden');
             el.leaveBoardBtn.classList.add('hidden');
             el.boardOwner.classList.add('hidden');
+            el.copyBoardBtn.classList.add('hidden');
             applyTheme('dark');
           }
           renderBoardsList();
@@ -1622,6 +1705,7 @@ document.addEventListener('DOMContentLoaded', () => {
           state.activeBoard.name = data.board.name;
           state.activeBoard.description = data.board.description;
           state.activeBoard.theme = data.board.theme;
+          state.activeBoard.icon = data.board.icon;
           el.boardTitle.textContent = data.board.name;
           el.boardDesc.textContent = data.board.description || 'No description provided.';
           applyTheme(data.board.theme || 'dark');
@@ -1632,6 +1716,8 @@ document.addEventListener('DOMContentLoaded', () => {
             state.boards[boardIdx].name = data.board.name;
             state.boards[boardIdx].description = data.board.description;
             state.boards[boardIdx].theme = data.board.theme;
+            state.boards[boardIdx].icon = data.board.icon;
+            state.boards[boardIdx].updated_at = data.board.updated_at;
           }
 
           renderBoardsList();
@@ -1666,6 +1752,7 @@ document.addEventListener('DOMContentLoaded', () => {
           el.deleteBoardBtn.classList.add('hidden');
           el.leaveBoardBtn.classList.add('hidden');
           el.boardOwner.classList.add('hidden');
+          el.copyBoardBtn.classList.add('hidden');
           applyTheme('dark');
 
           // Re-render boards list immediately

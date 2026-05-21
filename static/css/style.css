@@ -199,6 +199,91 @@ a:hover {
   letter-spacing: 0.05em;
 }
 
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Icon Picker */
+.icon-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.icon-input {
+  width: 60px;
+  text-align: center;
+  font-size: 24px;
+  padding: 8px;
+}
+
+.icon-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.icon-preset {
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.icon-preset:hover {
+  background: rgba(99, 102, 241, 0.3);
+  border-color: var(--accent-primary);
+  transform: scale(1.1);
+}
+
+/* Boards Sort */
+.boards-sort-wrap {
+  padding: 0 12px 8px 12px;
+}
+
+.boards-sort-select {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.boards-sort-select:focus {
+  border-color: var(--accent-primary);
+  outline: none;
+}
+
 input[type="text"],
 input[type="email"],
 input[type="password"],

@@ -24,8 +24,10 @@ type Board struct {
 	Name        string       `json:"name"`
 	Description string       `json:"description"`
 	Theme       string       `json:"theme"`
+	Icon        string       `json:"icon"`
 	OwnerID     string       `json:"owner_id"`
 	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 	Members     []*User      `json:"members,omitempty"`
 	Lists       []*List      `json:"lists,omitempty"`
 }

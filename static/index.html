@@ -67,7 +67,7 @@
           <div class="logo-wrap">
             <span class="logo-icon">⚡</span>
             <span class="logo-text">Trbillo</span>
-            <span class="version-badge">v13</span>
+            <span class="version-badge">v15</span>
           </div>
           <button id="sidebar-toggle" class="btn-icon" aria-label="Toggle Sidebar">◀</button>
         </div>
@@ -82,6 +82,14 @@
               <input type="checkbox" id="my-boards-filter">
               <span>My boards only</span>
             </label>
+            <div class="boards-sort-wrap">
+              <select id="boards-sort" class="boards-sort-select">
+                <option value="updated-desc">Last Updated</option>
+                <option value="updated-asc">Oldest Updated</option>
+                <option value="alpha-asc">A → Z</option>
+                <option value="alpha-desc">Z → A</option>
+              </select>
+            </div>
             <ul id="boards-list" class="boards-menu">
               <!-- Dynamically populated boards -->
             </ul>
@@ -128,6 +136,10 @@
 
             <button id="board-settings-btn" class="btn btn-secondary btn-sm btn-icon-only hidden" title="Board Settings">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
+
+            <button id="copy-board-btn" class="btn btn-secondary btn-sm btn-icon-only hidden" title="Copy Board">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
             </button>
 
             <button id="delete-board-btn" class="btn btn-danger btn-sm btn-icon-only hidden" title="Delete Board">
@@ -330,6 +342,31 @@
     </form>
   </dialog>
 
+  <!-- COPY BOARD MODAL -->
+  <dialog id="copy-board-modal" class="custom-dialog-sm glass-panel" closedby="any" aria-labelledby="modal-copy-board-title">
+    <div class="dialog-header">
+      <h3 id="modal-copy-board-title">Copy Board</h3>
+      <button onclick="document.getElementById('copy-board-modal').close()" class="btn-icon" aria-label="Close modal">✖</button>
+    </div>
+    <form id="copy-board-form" class="dialog-form">
+      <div class="form-group">
+        <label for="copy-board-name">New Board Name</label>
+        <input type="text" id="copy-board-name" required placeholder="Enter name for the copy">
+      </div>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="copy-board-include-members">
+          <span>Include team members</span>
+        </label>
+        <p class="form-hint">You will become the owner. The original owner will be added as a member.</p>
+      </div>
+      <div class="btn-row-right">
+        <button type="button" onclick="document.getElementById('copy-board-modal').close()" class="btn btn-secondary">Cancel</button>
+        <button type="submit" class="btn btn-primary">Copy Board</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- BOARD SETTINGS MODAL -->
   <dialog id="board-settings-modal" class="custom-dialog glass-panel" closedby="any" aria-labelledby="modal-settings-title">
     <div class="dialog-header">
@@ -344,6 +381,25 @@
       <div class="form-group">
         <label for="settings-board-desc">Description</label>
         <textarea id="settings-board-desc" placeholder="Board description"></textarea>
+      </div>
+      <div class="form-group">
+        <label for="settings-board-icon">Icon</label>
+        <div class="icon-picker">
+          <input type="text" id="settings-board-icon" class="icon-input" maxlength="2" placeholder="📋">
+          <div class="icon-presets" id="icon-presets">
+            <button type="button" class="icon-preset" data-icon="❤️">❤️</button>
+            <button type="button" class="icon-preset" data-icon="🎃">🎃</button>
+            <button type="button" class="icon-preset" data-icon="🎵">🎵</button>
+            <button type="button" class="icon-preset" data-icon="🤖">🤖</button>
+            <button type="button" class="icon-preset" data-icon="🐶">🐶</button>
+            <button type="button" class="icon-preset" data-icon="🐟">🐟</button>
+            <button type="button" class="icon-preset" data-icon="🐢">🐢</button>
+            <button type="button" class="icon-preset" data-icon="⚽️">⚽️</button>
+            <button type="button" class="icon-preset" data-icon="🥎">🥎</button>
+            <button type="button" class="icon-preset" data-icon="🚗">🚗</button>
+            <button type="button" class="icon-preset" data-icon="✈️">✈️</button>
+          </div>
+        </div>
       </div>
       <div class="form-group">
         <label>Theme</label>

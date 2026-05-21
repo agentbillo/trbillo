@@ -54,6 +54,7 @@ func main() {
 	mux.HandleFunc("POST /api/boards/{id}/members", authMiddleware(AddBoardMemberHandler))
 	mux.HandleFunc("DELETE /api/boards/{id}/members/{user_id}", authMiddleware(RemoveBoardMemberHandler))
 	mux.HandleFunc("GET /api/boards/{id}/collaborators", authMiddleware(GetCollaboratorsHandler))
+	mux.HandleFunc("POST /api/boards/{id}/copy", authMiddleware(CopyBoardHandler))
 
 	// --- LISTS ROUTING ---
 	mux.HandleFunc("POST /api/boards/{board_id}/lists", authMiddleware(CreateListHandler))

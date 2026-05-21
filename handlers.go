@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -251,6 +252,7 @@ func ListBoardsHandler(w http.ResponseWriter, r *http.Request) {
 	userID := getUserID(r)
 	boards, err := ListUserBoards(userID)
 	if err != nil {
+		log.Printf("ListUserBoards error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Failed to fetch boards")
 		return
 	}
@@ -328,6 +330,7 @@ type UpdateBoardReq struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Theme       string `json:"theme"`
+	Icon        string `json:"icon"`
 }
 
 func UpdateBoardHandler(w http.ResponseWriter, r *http.Request) {
@@ -338,6 +341,13 @@ func UpdateBoardHandler(w http.ResponseWriter, r *http.Request) {
 	isMember, err := IsBoardMember(boardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
+		return
+	}
+
+	// Get current board to preserve existing values if not provided
+	currentBoard, err := GetBoard(boardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
 		return
 	}
 
@@ -357,7 +367,12 @@ func UpdateBoardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updatedBoard, err := UpdateBoard(boardID, req.Name, req.Description, req.Theme)
+	// Use existing icon if not provided
+	if req.Icon == "" {
+		req.Icon = currentBoard.Icon
+	}
+
+	updatedBoard, err := UpdateBoard(boardID, req.Name, req.Description, req.Theme, req.Icon)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to update board")
 		return
@@ -530,6 +545,65 @@ func GetCollaboratorsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, collaborators)
+}
+
+type CopyBoardReq struct {
+	Name           string `json:"name"`
+	IncludeMembers bool   `json:"include_members"`
+}
+
+func CopyBoardHandler(w http.ResponseWriter, r *http.Request) {
+	boardID := r.PathValue("id")
+	userID := getUserID(r)
+
+	// Check if current user is board member
+	isMember, err := IsBoardMember(boardID, userID)
+	if err != nil || !isMember {
+		writeError(w, http.StatusForbidden, "Access denied")
+		return
+	}
+
+	var req CopyBoardReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "Board name is required")
+		return
+	}
+
+	// Copy the board
+	newBoard, err := CopyBoard(boardID, req.Name, userID, req.IncludeMembers)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to copy board")
+		return
+	}
+
+	// Log activity on the source board
+	sourceBoard, _ := GetBoard(boardID)
+	u, _ := GetUserByID(userID)
+	_, _ = LogActivity(boardID, userID, u.Username, "copy_board", fmt.Sprintf("copied board to %q", req.Name))
+
+	// If members were included, notify them about being added to the new board
+	if req.IncludeMembers {
+		members, _ := GetBoardMembers(newBoard.ID)
+		for _, member := range members {
+			if member.ID != userID {
+				userPayload, _ := json.Marshal(map[string]interface{}{
+					"type":  "added_to_board",
+					"board": newBoard,
+				})
+				HubInstance.BroadcastToUser(member.ID, userPayload)
+			}
+		}
+	}
+
+	// Log activity on the new board
+	_, _ = LogActivity(newBoard.ID, userID, u.Username, "create_board", fmt.Sprintf("created board %q (copied from %q)", newBoard.Name, sourceBoard.Name))
+
+	writeJSON(w, http.StatusCreated, newBoard)
 }
 
 // --- LIST HANDLERS ---
