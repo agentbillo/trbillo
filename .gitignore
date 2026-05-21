@@ -30,3 +30,10 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Project-specific
+trbillo
+trbillo_server
+trbillo_server_new
+*.db
+*conflicted copy*
