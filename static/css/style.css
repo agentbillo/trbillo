@@ -898,6 +898,15 @@ textarea {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+  max-height: calc(90vh - 120px);
+}
+
+.view-only-body > .dialog-meta-text {
+  margin: 0;
+}
+
+.view-only-body p {
+  margin: 0;
 }
 
 .view-title {
@@ -1261,7 +1270,7 @@ dialog::backdrop {
   font-family: 'Outfit', sans-serif;
   font-size: 22px;
   font-weight: 700;
-  color: #fff;
+  color: var(--text-primary);
   width: 100%;
   border-radius: 4px;
   padding: 2px 6px;
@@ -1287,7 +1296,7 @@ dialog::backdrop {
 }
 
 .meta-highlight {
-  color: #fff;
+  color: var(--text-primary);
   text-decoration: underline;
   font-weight: 500;
 }
@@ -1303,7 +1312,7 @@ dialog::backdrop {
   justify-content: space-between;
   font-size: 14px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
   margin-bottom: 12px;
   font-family: 'Outfit', sans-serif;
 }
@@ -1429,7 +1438,7 @@ dialog::backdrop {
 .comment-author {
   font-size: 12px;
   font-weight: 600;
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .comment-time {
