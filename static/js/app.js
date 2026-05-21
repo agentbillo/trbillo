@@ -78,8 +78,10 @@ document.addEventListener('DOMContentLoaded', () => {
     modalListName: document.getElementById('modal-list-name'),
     modalCardDesc: document.getElementById('modal-card-desc'),
     saveDescBtn: document.getElementById('save-desc-btn'),
+    bodySaveStatus: document.getElementById('body-save-status'),
     modalCardLink: document.getElementById('modal-card-link'),
     saveLinkBtn: document.getElementById('save-link-btn'),
+    linkSaveStatus: document.getElementById('link-save-status'),
     checklistProgress: document.getElementById('checklist-progress'),
     checklistProgressBar: document.getElementById('checklist-progress-bar'),
     checklistItemsList: document.getElementById('checklist-items-list'),
@@ -1301,6 +1303,8 @@ document.addEventListener('DOMContentLoaded', () => {
       el.modalCardDuedate.value = task.due_date ? task.due_date.substring(0, 10) : '';
       el.modalCardDesc.value = task.description;
       el.modalCardLink.value = task.link || '';
+      el.bodySaveStatus.textContent = '';
+      el.linkSaveStatus.textContent = '';
 
       const listEl = state.activeBoard.lists.find(l => l.id === task.list_id);
       el.modalListName.textContent = listEl ? listEl.name : 'Unknown';
@@ -1475,10 +1479,15 @@ document.addEventListener('DOMContentLoaded', () => {
         position: state.activeCard.position
       });
       state.activeCard.description = newDesc;
-      alert('Body saved successfully!');
+      el.bodySaveStatus.textContent = 'saved';
     } catch (err) {
+      el.bodySaveStatus.textContent = '';
       alert(`Failed to save body: ${err.message}`);
     }
+  });
+
+  el.modalCardDesc.addEventListener('input', () => {
+    el.bodySaveStatus.textContent = '';
   });
 
   // Save link
@@ -1493,10 +1502,15 @@ document.addEventListener('DOMContentLoaded', () => {
         position: state.activeCard.position
       });
       state.activeCard.link = newLink;
-      alert('Link saved successfully!');
+      el.linkSaveStatus.textContent = 'saved';
     } catch (err) {
+      el.linkSaveStatus.textContent = '';
       alert(`Failed to save link: ${err.message}`);
     }
+  });
+
+  el.modalCardLink.addEventListener('input', () => {
+    el.linkSaveStatus.textContent = '';
   });
 
   // Save due date

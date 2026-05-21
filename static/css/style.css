@@ -1319,7 +1319,15 @@ dialog::backdrop {
 
 .btn-row {
   display: flex;
+  align-items: center;
   margin-top: 8px;
+}
+
+.save-status {
+  margin-left: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition: opacity 0.3s;
 }
 
 .btn-row-right {
