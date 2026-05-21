@@ -103,7 +103,25 @@ document.addEventListener('DOMContentLoaded', () => {
     copyBoardModal: document.getElementById('copy-board-modal'),
     copyBoardForm: document.getElementById('copy-board-form'),
     copyBoardName: document.getElementById('copy-board-name'),
-    copyBoardIncludeMembers: document.getElementById('copy-board-include-members')
+    copyBoardIncludeMembers: document.getElementById('copy-board-include-members'),
+
+    // Card View Modal
+    cardViewModal: document.getElementById('card-view-modal'),
+    viewCardTitle: document.getElementById('view-card-title'),
+    viewListName: document.getElementById('view-list-name'),
+    viewCardDuedate: document.getElementById('view-card-duedate'),
+    viewCardLabels: document.getElementById('view-card-labels'),
+    viewCardBodySection: document.getElementById('view-card-body-section'),
+    viewCardBody: document.getElementById('view-card-body'),
+    viewCardLinkSection: document.getElementById('view-card-link-section'),
+    viewCardLink: document.getElementById('view-card-link'),
+    viewCardAssigneesSection: document.getElementById('view-card-assignees-section'),
+    viewCardAssignees: document.getElementById('view-card-assignees'),
+    viewChecklistSection: document.getElementById('view-checklist-section'),
+    viewChecklistProgress: document.getElementById('view-checklist-progress'),
+    viewChecklistProgressBar: document.getElementById('view-checklist-progress-bar'),
+    viewChecklistItems: document.getElementById('view-checklist-items'),
+    viewCommentsList: document.getElementById('view-comments-list')
   };
 
   // --- API CALLS (AJAX) ---
@@ -552,6 +570,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     card.innerHTML = `
+      <div class="card-actions">
+        <button class="card-view-btn" type="button" title="View card" aria-label="View card">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        </button>
+        <button class="card-edit-btn" type="button" title="Edit card" aria-label="Edit card">✎</button>
+      </div>
       ${labelsHTML}
       ${titleHTML}
       ${bodyHTML}
@@ -1070,6 +1094,22 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    // View card button — open the read-only view modal
+    if (e.target.closest('.card-view-btn')) {
+      e.stopPropagation();
+      const cardItem = e.target.closest('.card-item');
+      if (cardItem) openCardViewModal(cardItem.dataset.id);
+      return;
+    }
+
+    // Edit card button — open the detail modal
+    if (e.target.closest('.card-edit-btn')) {
+      e.stopPropagation();
+      const cardItem = e.target.closest('.card-item');
+      if (cardItem) openCardDetailsModal(cardItem.dataset.id);
+      return;
+    }
+
     // Expand/collapse card body preview
     if (e.target.classList.contains('card-body-toggle')) {
       e.stopPropagation();
@@ -1131,6 +1171,124 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   });
+
+  // --- CARD VIEW MODAL (read-only) ---
+  async function openCardViewModal(cardId) {
+    try {
+      const task = await api.getCard(cardId);
+
+      el.viewCardTitle.textContent = task.title || '(untitled)';
+
+      const listEl = state.activeBoard.lists.find(l => l.id === task.list_id);
+      el.viewListName.textContent = listEl ? listEl.name : 'Unknown';
+
+      if (task.due_date) {
+        const d = new Date(task.due_date);
+        el.viewCardDuedate.textContent = ' · due ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      } else {
+        el.viewCardDuedate.textContent = '';
+      }
+
+      // Labels
+      el.viewCardLabels.innerHTML = '';
+      if (task.labels && task.labels.length > 0) {
+        task.labels.forEach(label => {
+          const pill = document.createElement('span');
+          pill.className = 'label-pill';
+          pill.style.backgroundColor = label.color;
+          pill.textContent = label.name;
+          el.viewCardLabels.appendChild(pill);
+        });
+        el.viewCardLabels.classList.remove('hidden');
+      } else {
+        el.viewCardLabels.classList.add('hidden');
+      }
+
+      // Body
+      if (task.description) {
+        el.viewCardBody.textContent = task.description;
+        el.viewCardBodySection.classList.remove('hidden');
+      } else {
+        el.viewCardBodySection.classList.add('hidden');
+      }
+
+      // Link
+      if (task.link) {
+        el.viewCardLink.href = task.link;
+        el.viewCardLink.textContent = task.link;
+        el.viewCardLinkSection.classList.remove('hidden');
+      } else {
+        el.viewCardLinkSection.classList.add('hidden');
+      }
+
+      // Assignees
+      el.viewCardAssignees.innerHTML = '';
+      if (task.assignees && task.assignees.length > 0) {
+        task.assignees.forEach(a => {
+          const circle = document.createElement('div');
+          circle.className = 'avatar-circle';
+          circle.style.backgroundColor = a.avatar_color;
+          circle.title = a.username;
+          circle.textContent = a.username.substring(0, 2).toUpperCase();
+          el.viewCardAssignees.appendChild(circle);
+        });
+        el.viewCardAssigneesSection.classList.remove('hidden');
+      } else {
+        el.viewCardAssigneesSection.classList.add('hidden');
+      }
+
+      // Checklist
+      el.viewChecklistItems.innerHTML = '';
+      const items = task.checklist || [];
+      if (items.length > 0) {
+        const done = items.filter(i => i.is_completed).length;
+        const pct = Math.round((done / items.length) * 100);
+        el.viewChecklistProgress.textContent = `${done}/${items.length}`;
+        el.viewChecklistProgressBar.style.width = pct + '%';
+        items.forEach(i => {
+          const li = document.createElement('li');
+          li.className = 'view-checklist-item' + (i.is_completed ? ' completed' : '');
+          li.innerHTML = `<span class="view-check-mark">${i.is_completed ? '☑' : '☐'}</span> <span>${escapeHTML(i.title)}</span>`;
+          el.viewChecklistItems.appendChild(li);
+        });
+        el.viewChecklistSection.classList.remove('hidden');
+      } else {
+        el.viewChecklistSection.classList.add('hidden');
+      }
+
+      // Comments
+      const comments = (await api.getComments(cardId)) || [];
+      el.viewCommentsList.innerHTML = '';
+      if (comments.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'view-empty';
+        empty.textContent = 'No comments yet.';
+        el.viewCommentsList.appendChild(empty);
+      } else {
+        comments.forEach(comment => {
+          const div = document.createElement('div');
+          div.className = 'comment-card';
+          div.innerHTML = `
+            <div class="avatar-circle" style="background-color: ${comment.avatar_color || '#6366f1'}">
+              ${comment.username.substring(0, 2).toUpperCase()}
+            </div>
+            <div style="flex: 1">
+              <div class="comment-header">
+                <span class="comment-author">${escapeHTML(comment.username)}</span>
+                <span class="comment-time">${formatTimeAgo(new Date(comment.created_at))}</span>
+              </div>
+              <div class="comment-body">${escapeHTML(comment.content)}</div>
+            </div>
+          `;
+          el.viewCommentsList.appendChild(div);
+        });
+      }
+
+      el.cardViewModal.showModal();
+    } catch (err) {
+      alert(`Failed to load card: ${err.message}`);
+    }
+  }
 
   // --- CARD DETAIL MODAL FUNCTIONALITY ---
   async function openCardDetailsModal(cardId) {
@@ -1206,9 +1364,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Build Labels Dropdown menu items
-    // First fetch labels of this board from state or local request
-    el.labelMenuDropdown.innerHTML = '';
+    // Clear+populate must happen atomically inside the .then(), otherwise two
+    // overlapping renders both clear first (when both are empty) and then both
+    // append, leaving the menu doubled.
     api.getLabels(state.activeBoard.id).then(labels => {
+      el.labelMenuDropdown.innerHTML = '';
       const safeLabels = labels || [];
       safeLabels.forEach(label => {
         const isLabelled = state.activeCard.labels && state.activeCard.labels.some(l => l.id === label.id);
@@ -1448,11 +1608,15 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const position = state.activeCard.checklist ? state.activeCard.checklist.length : 0;
       const item = await api.addChecklistItem(state.activeCard.id, title, position);
-      
+
+      // Idempotent merge: the WS broadcast may have already added this item
+      // before the POST response returned, so push only if not already present.
       if (!state.activeCard.checklist) state.activeCard.checklist = [];
-      state.activeCard.checklist.push(item);
+      if (!state.activeCard.checklist.some(i => i.id === item.id)) {
+        state.activeCard.checklist.push(item);
+      }
       el.newChecklistTitle.value = '';
-      
+
       renderChecklist();
     } catch (err) {
       alert(`Failed to add checklist item: ${err.message}`);

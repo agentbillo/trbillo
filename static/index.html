@@ -311,6 +311,50 @@
     </div>
   </dialog>
 
+  <!-- CARD VIEW MODAL (read-only enlarged view) -->
+  <dialog id="card-view-modal" class="custom-dialog glass-panel" closedby="any" aria-labelledby="view-card-title">
+    <div class="dialog-header">
+      <h2 id="view-card-title" class="view-title">Card title</h2>
+      <button onclick="document.getElementById('card-view-modal').close()" class="btn-icon" aria-label="Close view">✖</button>
+    </div>
+    <div class="dialog-body view-only-body">
+      <p class="dialog-meta-text">
+        in list <span id="view-list-name" class="meta-highlight">—</span>
+        <span id="view-card-duedate" class="view-due"></span>
+      </p>
+
+      <div id="view-card-labels" class="view-section view-labels hidden"></div>
+
+      <div id="view-card-body-section" class="view-section hidden">
+        <h4>Body</h4>
+        <div id="view-card-body" class="view-body"></div>
+      </div>
+
+      <div id="view-card-link-section" class="view-section hidden">
+        <h4>Link</h4>
+        <a id="view-card-link" class="view-link" target="_blank" rel="noopener noreferrer"></a>
+      </div>
+
+      <div id="view-card-assignees-section" class="view-section hidden">
+        <h4>Assignees</h4>
+        <div id="view-card-assignees" class="members-avatars inline-avatars"></div>
+      </div>
+
+      <div id="view-checklist-section" class="view-section hidden">
+        <h4>Checklist <span id="view-checklist-progress" class="checklist-percent"></span></h4>
+        <div class="progress-bar-container">
+          <div id="view-checklist-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+        </div>
+        <ul id="view-checklist-items" class="view-checklist-items"></ul>
+      </div>
+
+      <div class="view-section">
+        <h4>Comments</h4>
+        <div id="view-comments-list" class="comments-stream"></div>
+      </div>
+    </div>
+  </dialog>
+
   <!-- CREATE BOARD MODAL -->
   <dialog id="create-board-modal" class="custom-dialog-sm glass-panel" closedby="any" aria-labelledby="modal-board-create-title">
     <div class="dialog-header">
