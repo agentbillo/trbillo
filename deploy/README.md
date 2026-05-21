@@ -1,7 +1,7 @@
 # Trbillo install bundle
 
 Self-contained bundle to install Trbillo on a Linux amd64 server behind Caddy
-at `https://slowbase.com/trbillo`.
+at `https://your-domain.com/trbillo`.
 
 ## Contents
 
@@ -11,13 +11,13 @@ at `https://slowbase.com/trbillo`.
 | `static/` | Frontend assets (HTML/CSS/JS) |
 | `trbillo.service` | systemd unit (installed to `/etc/systemd/system/`) |
 | `install.sh` | Run as root to install/upgrade |
-| `caddy-fragment.conf` | Snippet to drop into your `slowbase.com` Caddy site block |
+| `caddy-fragment.conf` | Snippet to drop into your `your-domain.com` Caddy site block |
 
 ## Install
 
 ```bash
 # On your dev machine:
-scp trbillo-install.tar.gz user@slowbase.com:~/
+scp trbillo-install.tar.gz user@your-domain.com:~/
 
 # On the server:
 tar xzf trbillo-install.tar.gz
@@ -37,14 +37,14 @@ with `BASE_PATH=/trbillo`.
 ## Wire up Caddy
 
 Add the two `handle` blocks from `caddy-fragment.conf` to your existing
-`slowbase.com { ... }` block in `/etc/caddy/Caddyfile`, then:
+`your-domain.com { ... }` block in `/etc/caddy/Caddyfile`, then:
 
 ```bash
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Visit `https://slowbase.com/trbillo/` — the app should load.
+Visit `https://your-domain.com/trbillo/` — the app should load.
 
 ## Upgrading
 

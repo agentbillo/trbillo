@@ -70,8 +70,8 @@ if systemctl is-active --quiet trbillo; then
   echo "  logs:    journalctl -u trbillo -f"
   echo "  listens: localhost:8080 (BASE_PATH=/trbillo)"
   echo
-  echo "Next: add the contents of caddy-fragment.conf into your slowbase.com site"
-  echo "block in /etc/caddy/Caddyfile, then:"
+  echo "Next: add the contents of caddy-fragment.conf into your site block"
+  echo "in /etc/caddy/Caddyfile, then:"
   echo "  sudo caddy validate --config /etc/caddy/Caddyfile"
   echo "  sudo systemctl reload caddy"
 else

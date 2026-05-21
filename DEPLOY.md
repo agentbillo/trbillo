@@ -1,20 +1,25 @@
 # Trbillo Deployment Guide
 
-How to build and install Trbillo on a Linux server behind Caddy at
-`https://slowbase.com/trbillo`.
+How to build and install Trbillo on a Linux server behind Caddy.
+
+Throughout this guide, `your-domain.com` is a placeholder — replace it
+with the domain you own. The `/trbillo` URL prefix is also a deployment
+choice: set `BASE_PATH=""` in the systemd unit and adjust the Caddy
+config to mount at the root, or change `BASE_PATH=/whatever` to use a
+different prefix.
 
 ## Architecture
 
 - **Go server** binds `localhost:8080`, serves under URL prefix `/trbillo`
   (via `BASE_PATH` env var).
-- **Caddy** terminates TLS for `slowbase.com` and reverse-proxies
+- **Caddy** terminates TLS for `your-domain.com` and reverse-proxies
   `/trbillo/*` to the Go server (preserving the prefix).
 - **SQLite** database in `/var/lib/trbillo/trbillo.db`, owned by a dedicated
   `trbillo` system user.
 - **systemd** keeps the service running and restarts on failure.
 
 ```
-Browser → https://slowbase.com/trbillo/...
+Browser → https://your-domain.com/trbillo/...
             │
             ▼
           Caddy (:443, TLS)
@@ -61,7 +66,7 @@ The resulting `dist/trbillo-install.tar.gz` is ~4.4 MB and contains:
 | `static/` | Frontend assets (HTML/CSS/JS) |
 | `trbillo.service` | systemd unit (installs to `/etc/systemd/system/`) |
 | `install.sh` | Idempotent installer, run as root |
-| `caddy-fragment.conf` | Snippet to drop into `slowbase.com` Caddy site block |
+| `caddy-fragment.conf` | Snippet to drop into `your-domain.com` Caddy site block |
 | `README.md` | Quick reference |
 
 ## Installing on the server
@@ -72,7 +77,7 @@ If you used `./deploy.sh user@server` the tarball is already in `~/` on
 the server. Otherwise upload manually:
 
 ```bash
-scp dist/trbillo-install.tar.gz user@slowbase.com:~/
+scp dist/trbillo-install.tar.gz user@your-domain.com:~/
 ```
 
 Then on the server:
@@ -104,15 +109,15 @@ needs Caddy.
 
 Caddy provisions a Let's Encrypt cert and handles HTTP→HTTPS redirect
 automatically as long as the site is named with a real domain (e.g.
-`slowbase.com`, not `:80` or `http://...`).
+`your-domain.com`, not `:80` or `http://...`).
 
 Full `/etc/caddy/Caddyfile` for serving static files at the root and
 proxying `/trbillo/*` to the Go server:
 
 ```caddy
-slowbase.com {
+your-domain.com {
     # Static file root for everything that isn't a /trbillo route
-    root * /var/www/slowbase
+    root * /var/www/html
 
     # --- Trbillo (proxied to the Go server on localhost:8080) ---
     handle /trbillo {
@@ -122,7 +127,7 @@ slowbase.com {
         reverse_proxy localhost:8080
     }
 
-    # --- Everything else: serve static files from /var/www/slowbase ---
+    # --- Everything else: serve static files from /var/www/html ---
     handle {
         file_server
         # For SPA-style fallback, uncomment:
@@ -141,9 +146,9 @@ Notes:
   and `/trbillo/api/ws/user` work without extra config.
 - Make sure the static root exists and is readable by the `caddy` user:
   ```bash
-  sudo mkdir -p /var/www/slowbase
-  sudo chown -R caddy:caddy /var/www/slowbase
-  echo '<h1>slowbase.com</h1>' | sudo tee /var/www/slowbase/index.html
+  sudo mkdir -p /var/www/html
+  sudo chown -R caddy:caddy /var/www/html
+  echo '<h1>your-domain.com</h1>' | sudo tee /var/www/html/index.html
   ```
 - Adding another app later (e.g. `/blog`) is the same pattern: add another
   `handle /blog/*` block — order doesn't matter.
@@ -157,7 +162,7 @@ sudo systemctl reload caddy
 
 ### 3. Verify
 
-Visit `https://slowbase.com/trbillo/` — the Trbillo login page should load.
+Visit `https://your-domain.com/trbillo/` — the Trbillo login page should load.
 Create a test account, make a board, drop a card on it. Open the same
 board in two browsers to confirm real-time WebSocket sync.
 
