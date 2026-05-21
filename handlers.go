@@ -10,11 +10,106 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// Email validation regex - stricter validation:
+// - No consecutive dots
+// - Must start and end with alphanumeric
+// - Valid domain with at least one dot
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._%+\-]*[a-zA-Z0-9])?@[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)+$`)
+
+// Hex color validation regex (e.g., #RGB, #RRGGBB)
+var hexColorRegex = regexp.MustCompile(`^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
+// UUID validation regex
+var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// Rate limiter for auth endpoints
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int           // max requests
+	window   time.Duration // time window
+}
+
+var authRateLimiter = &rateLimiter{
+	requests: make(map[string][]time.Time),
+	limit:    10,              // 10 requests
+	window:   1 * time.Minute, // per minute
+}
+
+func (rl *rateLimiter) isAllowed(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	windowStart := now.Add(-rl.window)
+
+	// Filter out old requests
+	var recent []time.Time
+	for _, t := range rl.requests[ip] {
+		if t.After(windowStart) {
+			recent = append(recent, t)
+		}
+	}
+
+	if len(recent) >= rl.limit {
+		rl.requests[ip] = recent
+		return false
+	}
+
+	rl.requests[ip] = append(recent, now)
+	return true
+}
+
+func getClientIP(r *http.Request) string {
+	// Get the direct connection IP first
+	ip := r.RemoteAddr
+	// Strip port if present
+	if colonIdx := strings.LastIndex(ip, ":"); colonIdx != -1 {
+		ip = ip[:colonIdx]
+	}
+
+	// Only trust proxy headers if request comes from localhost (trusted reverse proxy)
+	// This prevents attackers from spoofing their IP via X-Forwarded-For
+	if ip == "127.0.0.1" || ip == "::1" || ip == "localhost" {
+		// Check X-Forwarded-For header (for reverse proxies)
+		xff := r.Header.Get("X-Forwarded-For")
+		if xff != "" {
+			// Take the first IP in the list (original client)
+			if commaIdx := strings.Index(xff, ","); commaIdx != -1 {
+				return strings.TrimSpace(xff[:commaIdx])
+			}
+			return strings.TrimSpace(xff)
+		}
+		// Check X-Real-IP header
+		xri := r.Header.Get("X-Real-IP")
+		if xri != "" {
+			return xri
+		}
+	}
+
+	return ip
+}
+
+// Middleware: Rate limiting for auth endpoints
+func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := getClientIP(r)
+		if !authRateLimiter.isAllowed(ip) {
+			writeError(w, http.StatusTooManyRequests, "Too many requests. Please try again later.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
 
 // ContextKey represents context key type
 type ContextKey string
@@ -31,6 +126,101 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // Helper: Error writing
 func writeError(w http.ResponseWriter, status int, errMsg string) {
 	writeJSON(w, status, map[string]string{"error": errMsg})
+}
+
+// Helper: Check if request is from localhost (for secure cookie decisions)
+func isLocalhost(r *http.Request) bool {
+	host := r.Host
+	// Strip port if present
+	if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
+		host = host[:colonIdx]
+	}
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// Helper: Set session cookie with appropriate security settings
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_token",
+		Value:    token,
+		Expires:  expires,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !isLocalhost(r), // Secure=true for non-localhost (HTTPS)
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// Helper: Clear session cookie
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session_token",
+		Value:    "",
+		Expires:  time.Now().Add(-1 * time.Hour),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   !isLocalhost(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// Middleware: CSRF Protection
+// Validates Origin/Referer header for state-changing requests.
+// Combined with SameSite=Strict cookies for defense-in-depth.
+func csrfMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Only check state-changing methods
+		if r.Method == "POST" || r.Method == "PUT" || r.Method == "PATCH" || r.Method == "DELETE" {
+			// Skip CSRF check for localhost
+			if isLocalhost(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Check Origin header first, then Referer as fallback
+			origin := r.Header.Get("Origin")
+			referer := r.Header.Get("Referer")
+
+			if origin == "" && referer == "" {
+				writeError(w, http.StatusForbidden, "CSRF validation failed: missing origin")
+				return
+			}
+
+			// Validate that origin/referer matches the host
+			checkValue := origin
+			if checkValue == "" {
+				checkValue = referer
+			}
+
+			// Extract host from origin/referer
+			checkHost := checkValue
+			if strings.HasPrefix(checkHost, "https://") {
+				checkHost = checkHost[8:]
+			} else if strings.HasPrefix(checkHost, "http://") {
+				checkHost = checkHost[7:]
+			}
+			// Remove path from referer if present
+			if slashIdx := strings.Index(checkHost, "/"); slashIdx != -1 {
+				checkHost = checkHost[:slashIdx]
+			}
+			// Strip port for comparison
+			if colonIdx := strings.LastIndex(checkHost, ":"); colonIdx != -1 {
+				checkHost = checkHost[:colonIdx]
+			}
+
+			requestHost := r.Host
+			if colonIdx := strings.LastIndex(requestHost, ":"); colonIdx != -1 {
+				requestHost = requestHost[:colonIdx]
+			}
+
+			if checkHost != requestHost {
+				writeError(w, http.StatusForbidden, "CSRF validation failed: origin mismatch")
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	}
 }
 
 // Middleware: Authenticate Session
@@ -70,8 +260,28 @@ func getUserID(r *http.Request) string {
 	if val == nil {
 		return ""
 	}
-	return val.(string)
+	userID, ok := val.(string)
+	if !ok {
+		return ""
+	}
+	return userID
 }
+
+// --- INPUT VALIDATION CONSTANTS ---
+const (
+	MaxUsernameLen    = 50
+	MaxEmailLen       = 255
+	MaxPasswordLen    = 128
+	MinPasswordLen    = 6
+	MaxBoardNameLen   = 100
+	MaxBoardDescLen   = 1000
+	MaxListNameLen    = 100
+	MaxTaskTitleLen   = 255
+	MaxTaskDescLen    = 5000
+	MaxCommentLen     = 5000
+	MaxLabelNameLen   = 50
+	MaxChecklistLen   = 255
+)
 
 // --- AUTH HANDLERS ---
 
@@ -95,6 +305,30 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Username == "" || req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "Username, email, and password are required")
+		return
+	}
+
+	// Input length validation
+	if len(req.Username) > MaxUsernameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Username must be %d characters or less", MaxUsernameLen))
+		return
+	}
+	if len(req.Email) > MaxEmailLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Email must be %d characters or less", MaxEmailLen))
+		return
+	}
+	if len(req.Password) < MinPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be at least %d characters", MinPasswordLen))
+		return
+	}
+	if len(req.Password) > MaxPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be %d characters or less", MaxPasswordLen))
+		return
+	}
+
+	// Email format validation
+	if !emailRegex.MatchString(req.Email) {
+		writeError(w, http.StatusBadRequest, "Invalid email format")
 		return
 	}
 
@@ -174,15 +408,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set Cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
-		Value:    token,
-		Expires:  expiresAt,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   false, // Set to true in HTTPS production
-		SameSite: http.SameSiteLaxMode,
-	})
+	setSessionCookie(w, r, token, expiresAt)
 
 	writeJSON(w, http.StatusOK, u)
 }
@@ -190,17 +416,14 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session_token")
 	if err == nil {
-		_ = DeleteSession(cookie.Value)
+		if deleteErr := DeleteSession(cookie.Value); deleteErr != nil {
+			// Log error but continue - user should still be logged out client-side
+			log.Printf("Warning: failed to delete session from database: %v", deleteErr)
+		}
 	}
 
 	// Clear Cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session_token",
-		Value:    "",
-		Expires:  time.Now().Add(-1 * time.Hour),
-		Path:     "/",
-		HttpOnly: true,
-	})
+	clearSessionCookie(w, r)
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Logged out successfully"})
 }
@@ -235,6 +458,16 @@ func CreateBoardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Input length validation
+	if len(req.Name) > MaxBoardNameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Board name must be %d characters or less", MaxBoardNameLen))
+		return
+	}
+	if len(req.Description) > MaxBoardDescLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Description must be %d characters or less", MaxBoardDescLen))
+		return
+	}
+
 	b, err := CreateBoard(req.Name, req.Description, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to create board")
@@ -242,8 +475,10 @@ func CreateBoardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(b.ID, userID, u.Username, "create_board", fmt.Sprintf("created board %q", b.Name))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(b.ID, userID, u.Username, "create_board", fmt.Sprintf("created board %q", b.Name))
+	}
 
 	writeJSON(w, http.StatusCreated, b)
 }
@@ -280,11 +515,14 @@ func GetBoardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Populate Members
+	// Populate Members (ensure empty slice instead of nil for JSON)
 	members, err := GetBoardMembers(boardID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch members")
 		return
+	}
+	if members == nil {
+		members = []*User{}
 	}
 	board.Members = members
 
@@ -294,6 +532,9 @@ func GetBoardHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch lists")
 		return
 	}
+	if lists == nil {
+		lists = []*List{}
+	}
 
 	// Fetch all tasks, assignees, labels, and checklists in batch to assemble the board
 	for _, l := range lists {
@@ -302,21 +543,30 @@ func GetBoardHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "Failed to fetch tasks")
 			return
 		}
+		if tasks == nil {
+			tasks = []*Task{}
+		}
 		for _, t := range tasks {
-			// Assignees
+			// Assignees (ensure empty slice instead of nil)
 			assignees, err := GetTaskAssignees(t.ID)
-			if err == nil {
+			if err == nil && assignees != nil {
 				t.Assignees = assignees
+			} else {
+				t.Assignees = []*User{}
 			}
-			// Labels
+			// Labels (ensure empty slice instead of nil)
 			labels, err := GetTaskLabels(t.ID)
-			if err == nil {
+			if err == nil && labels != nil {
 				t.Labels = labels
+			} else {
+				t.Labels = []*Label{}
 			}
-			// Checklist
+			// Checklist (ensure empty slice instead of nil)
 			checklist, err := GetChecklistItems(t.ID)
-			if err == nil {
+			if err == nil && checklist != nil {
 				t.Checklist = checklist
+			} else {
+				t.Checklist = []*ChecklistItem{}
 			}
 		}
 		l.Tasks = tasks
@@ -337,23 +587,32 @@ func UpdateBoardHandler(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("id")
 	userID := getUserID(r)
 
-	// Check if current user is board member
-	isMember, err := IsBoardMember(boardID, userID)
-	if err != nil || !isMember {
-		writeError(w, http.StatusForbidden, "Access denied")
-		return
-	}
-
-	// Get current board to preserve existing values if not provided
+	// Get current board to check ownership
 	currentBoard, err := GetBoard(boardID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "Board not found")
 		return
 	}
 
+	// Only board owner can update settings
+	if currentBoard.OwnerID != userID {
+		writeError(w, http.StatusForbidden, "Only board owner can update settings")
+		return
+	}
+
 	var req UpdateBoardReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	// Validate lengths
+	if len(req.Name) > MaxBoardNameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Board name exceeds maximum length of %d characters", MaxBoardNameLen))
+		return
+	}
+	if len(req.Description) > MaxBoardDescLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Board description exceeds maximum length of %d characters", MaxBoardDescLen))
 		return
 	}
 
@@ -379,8 +638,10 @@ func UpdateBoardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(boardID, userID, u.Username, "update_board", "updated board settings")
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(boardID, userID, u.Username, "update_board", "updated board settings")
+	}
 
 	// Broadcast WS update
 	broadcastBoardUpdate(boardID, "board_updated", map[string]interface{}{
@@ -421,10 +682,14 @@ func AddBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("id")
 	userID := getUserID(r)
 
-	// Check if current user is board member
-	isMember, err := IsBoardMember(boardID, userID)
-	if err != nil || !isMember {
-		writeError(w, http.StatusForbidden, "Access denied")
+	// Only board owner can invite members
+	board, err := GetBoard(boardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
+		return
+	}
+	if board.OwnerID != userID {
+		writeError(w, http.StatusForbidden, "Only board owner can invite members")
 		return
 	}
 
@@ -447,8 +712,10 @@ func AddBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(boardID, userID, u.Username, "add_member", fmt.Sprintf("added %s to the board", invitee.Username))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(boardID, userID, u.Username, "add_member", fmt.Sprintf("added %s to the board", invitee.Username))
+	}
 
 	// Broadcast WS update to board viewers
 	broadcastBoardUpdate(boardID, "member_added", map[string]interface{}{
@@ -456,7 +723,8 @@ func AddBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Also broadcast to the invited user's personal channel so board appears in their sidebar
-	board, _ := GetBoard(boardID)
+	// Refresh board data to include new member
+	board, _ = GetBoard(boardID)
 	userPayload, _ := json.Marshal(map[string]interface{}{
 		"type":  "added_to_board",
 		"board": board,
@@ -508,8 +776,10 @@ func RemoveBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetUser, _ := GetUserByID(targetUserID)
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(boardID, userID, u.Username, "remove_member", fmt.Sprintf("removed %s from the board", targetUser.Username))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(boardID, userID, u.Username, "remove_member", fmt.Sprintf("removed %s from the board", targetUser.Username))
+	}
 
 	broadcastBoardUpdate(boardID, "member_removed", map[string]interface{}{
 		"user_id": targetUserID,
@@ -583,8 +853,12 @@ func CopyBoardHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Log activity on the source board
 	sourceBoard, _ := GetBoard(boardID)
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(boardID, userID, u.Username, "copy_board", fmt.Sprintf("copied board to %q", req.Name))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(boardID, userID, u.Username, "copy_board", fmt.Sprintf("copied board to %q", req.Name))
+		// Log activity on the new board
+		_, _ = LogActivity(newBoard.ID, userID, u.Username, "create_board", fmt.Sprintf("created board %q (copied from %q)", newBoard.Name, sourceBoard.Name))
+	}
 
 	// If members were included, notify them about being added to the new board
 	if req.IncludeMembers {
@@ -599,9 +873,6 @@ func CopyBoardHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	// Log activity on the new board
-	_, _ = LogActivity(newBoard.ID, userID, u.Username, "create_board", fmt.Sprintf("created board %q (copied from %q)", newBoard.Name, sourceBoard.Name))
 
 	writeJSON(w, http.StatusCreated, newBoard)
 }
@@ -633,6 +904,10 @@ func CreateListHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "List name is required")
 		return
 	}
+	if len(req.Name) > MaxListNameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("List name exceeds maximum length of %d characters", MaxListNameLen))
+		return
+	}
 
 	l, err := CreateList(boardID, req.Name, req.Position)
 	if err != nil {
@@ -641,8 +916,10 @@ func CreateListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(boardID, userID, u.Username, "create_list", fmt.Sprintf("created list %q", l.Name))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(boardID, userID, u.Username, "create_list", fmt.Sprintf("created list %q", l.Name))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(boardID, "list_created", l)
@@ -700,9 +977,14 @@ func DeleteListHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isMember, err := IsBoardMember(list.BoardID, userID)
-	if err != nil || !isMember {
-		writeError(w, http.StatusForbidden, "Access denied")
+	// Only board owner can delete lists
+	board, err := GetBoard(list.BoardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
+		return
+	}
+	if board.OwnerID != userID {
+		writeError(w, http.StatusForbidden, "Only board owner can delete lists")
 		return
 	}
 
@@ -712,8 +994,10 @@ func DeleteListHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "delete_list", fmt.Sprintf("deleted list %q", list.Name))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "delete_list", fmt.Sprintf("deleted list %q", list.Name))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "list_deleted", map[string]string{"list_id": listID})
@@ -757,6 +1041,10 @@ func CreateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Task title is required")
 		return
 	}
+	if len(req.Title) > MaxTaskTitleLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task title exceeds maximum length of %d characters", MaxTaskTitleLen))
+		return
+	}
 
 	t, err := CreateTask(listID, req.Title, req.Position)
 	if err != nil {
@@ -765,8 +1053,10 @@ func CreateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "create_task", fmt.Sprintf("added card %q to %s", t.Title, list.Name))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "create_task", fmt.Sprintf("added card %q to %s", t.Title, list.Name))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "card_created", t)
@@ -843,6 +1133,16 @@ func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		req.ListID = t.ListID
 	}
 
+	// Validate lengths
+	if len(req.Title) > MaxTaskTitleLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task title exceeds maximum length of %d characters", MaxTaskTitleLen))
+		return
+	}
+	if len(req.Description) > MaxTaskDescLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task description exceeds maximum length of %d characters", MaxTaskDescLen))
+		return
+	}
+
 	// Check if moving to another list in the same board
 	if req.ListID != t.ListID {
 		newList, err := GetList(req.ListID)
@@ -917,8 +1217,10 @@ func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "delete_task", fmt.Sprintf("deleted card %q", t.Title))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "delete_task", fmt.Sprintf("deleted card %q", t.Title))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "card_deleted", map[string]string{
@@ -945,7 +1247,11 @@ func AssignTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -971,8 +1277,10 @@ func AssignTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	assigneeUser, _ := GetUserByID(req.UserID)
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "assign_task", fmt.Sprintf("assigned %s to card %q", assigneeUser.Username, t.Title))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "assign_task", fmt.Sprintf("assigned %s to card %q", assigneeUser.Username, t.Title))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "card_assignees_updated", map[string]interface{}{
@@ -994,7 +1302,11 @@ func UnassignTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1013,8 +1325,10 @@ func UnassignTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	unassigneeUser, _ := GetUserByID(req.UserID)
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "unassign_task", fmt.Sprintf("unassigned %s from card %q", unassigneeUser.Username, t.Title))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "unassign_task", fmt.Sprintf("unassigned %s from card %q", unassigneeUser.Username, t.Title))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "card_assignees_updated", map[string]interface{}{
@@ -1051,6 +1365,14 @@ func CreateBoardLabelHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Name == "" || req.Color == "" {
 		writeError(w, http.StatusBadRequest, "Label name and color are required")
+		return
+	}
+	if len(req.Name) > MaxLabelNameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Label name exceeds maximum length of %d characters", MaxLabelNameLen))
+		return
+	}
+	if !hexColorRegex.MatchString(req.Color) {
+		writeError(w, http.StatusBadRequest, "Invalid color format. Use hex color (e.g., #FF5733 or #F53)")
 		return
 	}
 
@@ -1096,7 +1418,11 @@ func AddTaskLabelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1134,7 +1460,11 @@ func RemoveTaskLabelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1179,7 +1509,11 @@ func CreateChecklistItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1194,6 +1528,10 @@ func CreateChecklistItemHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "Checklist item title is required")
+		return
+	}
+	if len(req.Title) > MaxChecklistLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Checklist item title exceeds maximum length of %d characters", MaxChecklistLen))
 		return
 	}
 
@@ -1238,7 +1576,11 @@ func UpdateChecklistItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1288,7 +1630,11 @@ func DeleteChecklistItemHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1326,7 +1672,11 @@ func CreateCommentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1343,6 +1693,10 @@ func CreateCommentHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Comment content is required")
 		return
 	}
+	if len(req.Content) > MaxCommentLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Comment exceeds maximum length of %d characters", MaxCommentLen))
+		return
+	}
 
 	comment, err := CreateComment(taskID, userID, req.Content)
 	if err != nil {
@@ -1351,8 +1705,10 @@ func CreateCommentHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log activity
-	u, _ := GetUserByID(userID)
-	_, _ = LogActivity(list.BoardID, userID, u.Username, "comment", fmt.Sprintf("commented on card %q: %q", t.Title, comment.Content))
+	u, err := GetUserByID(userID)
+	if err == nil {
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "comment", fmt.Sprintf("commented on card %q: %q", t.Title, comment.Content))
+	}
 
 	// Broadcast WS
 	broadcastBoardUpdate(list.BoardID, "comment_added", map[string]interface{}{
@@ -1373,7 +1729,11 @@ func ListTaskCommentsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	list, _ := GetList(t.ListID)
+	list, err := GetList(t.ListID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
+		return
+	}
 	isMember, err := IsBoardMember(list.BoardID, userID)
 	if err != nil || !isMember {
 		writeError(w, http.StatusForbidden, "Access denied")
@@ -1402,10 +1762,14 @@ func GetBoardActivitiesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := 50
+	const maxActivityLimit = 500
 	limitStr := r.URL.Query().Get("limit")
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
 			limit = l
+			if limit > maxActivityLimit {
+				limit = maxActivityLimit
+			}
 		}
 	}
 
@@ -1427,6 +1791,10 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Missing board_id query parameter")
 		return
 	}
+	if !uuidRegex.MatchString(boardID) {
+		writeError(w, http.StatusBadRequest, "Invalid board_id format")
+		return
+	}
 
 	// Verify authentication token from cookie manually since it's a websocket upgrade
 	cookie, err := r.Cookie("session_token")
@@ -1436,8 +1804,12 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, err := GetSession(cookie.Value)
-	if err != nil || time.Now().After(session.ExpiresAt) {
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if time.Now().After(session.ExpiresAt) {
+		writeError(w, http.StatusUnauthorized, "Session expired")
 		return
 	}
 
@@ -1460,8 +1832,12 @@ func UserWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session, err := GetSession(cookie.Value)
-	if err != nil || time.Now().After(session.ExpiresAt) {
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if time.Now().After(session.ExpiresAt) {
+		writeError(w, http.StatusUnauthorized, "Session expired")
 		return
 	}
 

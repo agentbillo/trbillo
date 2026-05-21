@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -150,8 +152,13 @@ func migrate() error {
 	}
 
 	for _, migration := range optionalMigrations {
-		// Ignore errors (column may already exist)
-		_, _ = DB.Exec(migration)
+		// Log errors but continue (column may already exist, which is expected)
+		if _, err := DB.Exec(migration); err != nil {
+			// Only log if it's not a "duplicate column" error
+			if !strings.Contains(err.Error(), "duplicate column") {
+				log.Printf("Migration note: %v (may be expected if column exists)", err)
+			}
+		}
 	}
 
 	return nil
@@ -463,23 +470,24 @@ func DeleteBoard(id string) error {
 // If includeMembers is true, all members (except the new owner) are copied as members,
 // and the original owner becomes a regular member.
 func CopyBoard(sourceBoardID, newName, newOwnerID string, includeMembers bool) (*Board, error) {
-	// Get the source board
-	sourceBoard, err := GetBoard(sourceBoardID)
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := DB.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	// Get the source board within the transaction to avoid race conditions
+	var sourceDescription, sourceTheme, sourceIcon string
+	querySource := `SELECT description, theme, COALESCE(icon, '') FROM boards WHERE id = ?`
+	if err := tx.QueryRow(querySource, sourceBoardID).Scan(&sourceDescription, &sourceTheme, &sourceIcon); err != nil {
+		return nil, err
+	}
+
 	// Create new board
 	newBoardID := uuid.New().String()
 	now := time.Now()
 	queryBoard := `INSERT INTO boards (id, name, description, theme, icon, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	if _, err := tx.Exec(queryBoard, newBoardID, newName, sourceBoard.Description, sourceBoard.Theme, sourceBoard.Icon, newOwnerID, now, now); err != nil {
+	if _, err := tx.Exec(queryBoard, newBoardID, newName, sourceDescription, sourceTheme, sourceIcon, newOwnerID, now, now); err != nil {
 		return nil, err
 	}
 

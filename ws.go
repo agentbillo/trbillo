@@ -3,18 +3,54 @@ package main
 import (
 	"log"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+// checkWebSocketOrigin validates the WebSocket origin header.
+// Allows localhost for development, validates same-origin for production.
+// Rejects requests without Origin header in production to prevent CSRF.
+func checkWebSocketOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	host := r.Host
+
+	// Check if this is localhost first
+	hostWithoutPort := host
+	if colonIdx := strings.LastIndex(host, ":"); colonIdx != -1 {
+		hostWithoutPort = host[:colonIdx]
+	}
+	isLocalHost := hostWithoutPort == "localhost" || hostWithoutPort == "127.0.0.1" || hostWithoutPort == "::1"
+
+	if origin == "" {
+		// No origin header - only allow for localhost (development)
+		// In production, reject to prevent CSRF from non-browser clients
+		return isLocalHost
+	}
+
+	// For production, validate that origin matches the host
+	// Origin format: "https://example.com" or "http://example.com:8080"
+	originHost := origin
+	if strings.HasPrefix(originHost, "https://") {
+		originHost = originHost[8:]
+	} else if strings.HasPrefix(originHost, "http://") {
+		originHost = originHost[7:]
+	}
+
+	// Strip port from origin host for comparison
+	if colonIdx := strings.LastIndex(originHost, ":"); colonIdx != -1 {
+		originHost = originHost[:colonIdx]
+	}
+
+	return originHost == hostWithoutPort
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		// In production, tighten this. For local development, allow any origin.
-		return true
-	},
+	CheckOrigin:     checkWebSocketOrigin,
 }
 
 // Client represents a connected user on a specific board.
@@ -122,46 +158,54 @@ func (h *Hub) Run() {
 
 		case msg := <-h.broadcast:
 			boardIDStr := string(msg.BoardID)
+			// Snapshot clients to avoid race condition during iteration
 			h.mu.RLock()
-			clients := h.boards[boardIDStr]
+			originalClients := h.boards[boardIDStr]
+			clientsCopy := make([]*Client, 0, len(originalClients))
+			for client := range originalClients {
+				clientsCopy = append(clientsCopy, client)
+			}
 			h.mu.RUnlock()
 
-			for client := range clients {
+			for _, client := range clientsCopy {
 				select {
 				case client.send <- msg.Payload:
 				default:
-					// If buffer is full, unregister client
-					h.mu.Lock()
-					delete(clients, client)
-					client.mu.Lock()
-					if !client.isClosed {
-						client.isClosed = true
-						close(client.send)
-					}
-					client.mu.Unlock()
-					h.mu.Unlock()
+					// If buffer is full, schedule unregister with timeout to prevent goroutine leak
+					go func(c *Client) {
+						select {
+						case h.unregister <- c:
+						case <-time.After(5 * time.Second):
+							// Timeout - force close the connection to trigger cleanup via readPump
+							c.conn.Close()
+						}
+					}(client)
 				}
 			}
 
 		case msg := <-h.userBroadcast:
+			// Snapshot clients to avoid race condition during iteration
 			h.mu.RLock()
-			clients := h.users[msg.UserID]
+			originalClients := h.users[msg.UserID]
+			clientsCopy := make([]*Client, 0, len(originalClients))
+			for client := range originalClients {
+				clientsCopy = append(clientsCopy, client)
+			}
 			h.mu.RUnlock()
 
-			for client := range clients {
+			for _, client := range clientsCopy {
 				select {
 				case client.send <- msg.Payload:
 				default:
-					// If buffer is full, unregister client
-					h.mu.Lock()
-					delete(clients, client)
-					client.mu.Lock()
-					if !client.isClosed {
-						client.isClosed = true
-						close(client.send)
-					}
-					client.mu.Unlock()
-					h.mu.Unlock()
+					// If buffer is full, schedule unregister with timeout to prevent goroutine leak
+					go func(c *Client) {
+						select {
+						case h.unregister <- c:
+						case <-time.After(5 * time.Second):
+							// Timeout - force close the connection to trigger cleanup via readPump
+							c.conn.Close()
+						}
+					}(client)
 				}
 			}
 		}
