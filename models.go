@@ -53,6 +53,7 @@ type Task struct {
 	ListID      string          `json:"list_id"`
 	Title       string          `json:"title"`
 	Description string          `json:"description"`
+	Link        string          `json:"link"`
 	Position    int             `json:"position"`
 	DueDate     *time.Time      `json:"due_date"`
 	CreatedAt   time.Time       `json:"created_at"`

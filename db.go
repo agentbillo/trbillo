@@ -82,6 +82,7 @@ func migrate() error {
 			list_id TEXT NOT NULL,
 			title TEXT NOT NULL,
 			description TEXT NOT NULL DEFAULT '',
+			link TEXT NOT NULL DEFAULT '',
 			position INTEGER NOT NULL,
 			due_date TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -149,6 +150,7 @@ func migrate() error {
 		`ALTER TABLE boards ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark'`,
 		`ALTER TABLE boards ADD COLUMN icon TEXT NOT NULL DEFAULT '📋'`,
 		`ALTER TABLE boards ADD COLUMN updated_at TIMESTAMP`,
+		`ALTER TABLE tasks ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, migration := range optionalMigrations {
@@ -590,7 +592,7 @@ func CopyBoard(sourceBoardID, newName, newOwnerID string, includeMembers bool) (
 	// Copy tasks for each list
 	taskMap := make(map[string]string) // oldTaskID -> newTaskID
 	for oldListID, newListID := range listMap {
-		queryTasks := `SELECT id, title, description, position, due_date FROM tasks WHERE list_id = ? ORDER BY position ASC`
+		queryTasks := `SELECT id, title, description, link, position, due_date FROM tasks WHERE list_id = ? ORDER BY position ASC`
 		taskRows, err := tx.Query(queryTasks, oldListID)
 		if err != nil {
 			return nil, err
@@ -599,13 +601,14 @@ func CopyBoard(sourceBoardID, newName, newOwnerID string, includeMembers bool) (
 			oldID       string
 			title       string
 			description string
+			link        string
 			position    int
 			dueDate     sql.NullTime
 		}
 		tasks := []taskData{}
 		for taskRows.Next() {
 			var t taskData
-			if err := taskRows.Scan(&t.oldID, &t.title, &t.description, &t.position, &t.dueDate); err != nil {
+			if err := taskRows.Scan(&t.oldID, &t.title, &t.description, &t.link, &t.position, &t.dueDate); err != nil {
 				taskRows.Close()
 				return nil, err
 			}
@@ -618,13 +621,13 @@ func CopyBoard(sourceBoardID, newName, newOwnerID string, includeMembers bool) (
 			taskMap[t.oldID] = newTaskID
 			var queryInsertTask string
 			if t.dueDate.Valid {
-				queryInsertTask = `INSERT INTO tasks (id, list_id, title, description, position, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-				if _, err := tx.Exec(queryInsertTask, newTaskID, newListID, t.title, t.description, t.position, t.dueDate.Time, now, now); err != nil {
+				queryInsertTask = `INSERT INTO tasks (id, list_id, title, description, link, position, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				if _, err := tx.Exec(queryInsertTask, newTaskID, newListID, t.title, t.description, t.link, t.position, t.dueDate.Time, now, now); err != nil {
 					return nil, err
 				}
 			} else {
-				queryInsertTask = `INSERT INTO tasks (id, list_id, title, description, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-				if _, err := tx.Exec(queryInsertTask, newTaskID, newListID, t.title, t.description, t.position, now, now); err != nil {
+				queryInsertTask = `INSERT INTO tasks (id, list_id, title, description, link, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+				if _, err := tx.Exec(queryInsertTask, newTaskID, newListID, t.title, t.description, t.link, t.position, now, now); err != nil {
 					return nil, err
 				}
 			}
@@ -762,18 +765,19 @@ func GetListsByBoard(boardID string) ([]*List, error) {
 
 // --- TASK OPERATIONS ---
 
-func CreateTask(listID, title string, position int) (*Task, error) {
+func CreateTask(listID, title, description, link string, position int) (*Task, error) {
 	t := &Task{
 		ID:          uuid.New().String(),
 		ListID:      listID,
 		Title:       title,
-		Description: "",
+		Description: description,
+		Link:        link,
 		Position:    position,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
-	query := `INSERT INTO tasks (id, list_id, title, description, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
-	_, err := DB.Exec(query, t.ID, t.ListID, t.Title, t.Description, t.Position, t.CreatedAt, t.UpdatedAt)
+	query := `INSERT INTO tasks (id, list_id, title, description, link, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := DB.Exec(query, t.ID, t.ListID, t.Title, t.Description, t.Link, t.Position, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -783,8 +787,8 @@ func CreateTask(listID, title string, position int) (*Task, error) {
 func GetTask(id string) (*Task, error) {
 	t := &Task{}
 	var dueDate sql.NullTime
-	query := `SELECT id, list_id, title, description, position, due_date, created_at, updated_at FROM tasks WHERE id = ?`
-	err := DB.QueryRow(query, id).Scan(&t.ID, &t.ListID, &t.Title, &t.Description, &t.Position, &dueDate, &t.CreatedAt, &t.UpdatedAt)
+	query := `SELECT id, list_id, title, description, link, position, due_date, created_at, updated_at FROM tasks WHERE id = ?`
+	err := DB.QueryRow(query, id).Scan(&t.ID, &t.ListID, &t.Title, &t.Description, &t.Link, &t.Position, &dueDate, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -794,14 +798,14 @@ func GetTask(id string) (*Task, error) {
 	return t, nil
 }
 
-func UpdateTask(id, title, description, listID string, position int, dueDate *time.Time) error {
+func UpdateTask(id, title, description, link, listID string, position int, dueDate *time.Time) error {
 	var err error
 	if dueDate != nil {
-		query := `UPDATE tasks SET title = ?, description = ?, list_id = ?, position = ?, due_date = ?, updated_at = ? WHERE id = ?`
-		_, err = DB.Exec(query, title, description, listID, position, *dueDate, time.Now(), id)
+		query := `UPDATE tasks SET title = ?, description = ?, link = ?, list_id = ?, position = ?, due_date = ?, updated_at = ? WHERE id = ?`
+		_, err = DB.Exec(query, title, description, link, listID, position, *dueDate, time.Now(), id)
 	} else {
-		query := `UPDATE tasks SET title = ?, description = ?, list_id = ?, position = ?, due_date = NULL, updated_at = ? WHERE id = ?`
-		_, err = DB.Exec(query, title, description, listID, position, time.Now(), id)
+		query := `UPDATE tasks SET title = ?, description = ?, link = ?, list_id = ?, position = ?, due_date = NULL, updated_at = ? WHERE id = ?`
+		_, err = DB.Exec(query, title, description, link, listID, position, time.Now(), id)
 	}
 	return err
 }
@@ -813,7 +817,7 @@ func DeleteTask(id string) error {
 }
 
 func GetTasksByList(listID string) ([]*Task, error) {
-	query := `SELECT id, list_id, title, description, position, due_date, created_at, updated_at FROM tasks WHERE list_id = ? ORDER BY position ASC`
+	query := `SELECT id, list_id, title, description, link, position, due_date, created_at, updated_at FROM tasks WHERE list_id = ? ORDER BY position ASC`
 	rows, err := DB.Query(query, listID)
 	if err != nil {
 		return nil, err
@@ -824,7 +828,7 @@ func GetTasksByList(listID string) ([]*Task, error) {
 	for rows.Next() {
 		t := &Task{}
 		var dueDate sql.NullTime
-		if err := rows.Scan(&t.ID, &t.ListID, &t.Title, &t.Description, &t.Position, &dueDate, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ListID, &t.Title, &t.Description, &t.Link, &t.Position, &dueDate, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if dueDate.Valid {

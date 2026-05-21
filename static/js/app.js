@@ -78,6 +78,8 @@ document.addEventListener('DOMContentLoaded', () => {
     modalListName: document.getElementById('modal-list-name'),
     modalCardDesc: document.getElementById('modal-card-desc'),
     saveDescBtn: document.getElementById('save-desc-btn'),
+    modalCardLink: document.getElementById('modal-card-link'),
+    saveLinkBtn: document.getElementById('save-link-btn'),
     checklistProgress: document.getElementById('checklist-progress'),
     checklistProgressBar: document.getElementById('checklist-progress-bar'),
     checklistItemsList: document.getElementById('checklist-items-list'),
@@ -153,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     deleteList: (id) => api.request(`/api/lists/${id}`, 'DELETE'),
 
     // Cards (Tasks)
-    createCard: (listId, title, position) => api.request(`/api/lists/${listId}/tasks`, 'POST', { title, position }),
+    createCard: (listId, fields) => api.request(`/api/lists/${listId}/tasks`, 'POST', fields),
     getCard: (id) => api.request(`/api/tasks/${id}`),
     updateCard: (id, fields) => api.request(`/api/tasks/${id}`, 'PATCH', fields),
     deleteCard: (id) => api.request(`/api/tasks/${id}`, 'DELETE'),
@@ -414,7 +416,10 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="add-card-wrap">
           <button class="add-card-btn-trigger">+ Add a card</button>
           <div class="card-composer hidden">
-            <input type="text" placeholder="Enter a title for this card..." class="composer-title-input">
+            <input type="text" placeholder="Title (optional)" class="composer-title-input" maxlength="128">
+            <textarea placeholder="Body text (optional, up to 512 chars)" class="composer-body-input" rows="4" maxlength="512"></textarea>
+            <input type="url" placeholder="Link (optional, https://...)" class="composer-link-input" maxlength="256">
+            <div class="composer-hint">At least one field is required.</div>
             <div class="composer-actions">
               <button class="btn btn-primary btn-sm save-new-card">Add Card</button>
               <button class="btn-icon-sm cancel-new-card">✖</button>
@@ -516,9 +521,41 @@ document.addEventListener('DOMContentLoaded', () => {
       assigneesHTML += '</div>';
     }
 
+    // Title (only render if present)
+    const titleHTML = task.title
+      ? `<div class="card-title">${escapeHTML(task.title)}</div>`
+      : '';
+
+    // Body preview: truncate to 64 chars with expand/collapse toggle
+    let bodyHTML = '';
+    if (task.description) {
+      const BODY_PREVIEW_LEN = 64;
+      const isTruncated = task.description.length > BODY_PREVIEW_LEN;
+      const preview = isTruncated
+        ? task.description.slice(0, BODY_PREVIEW_LEN)
+        : task.description;
+      if (isTruncated) {
+        bodyHTML = `
+          <div class="card-body" data-full="${escapeHTML(task.description)}" data-preview="${escapeHTML(preview)}">
+            <span class="card-body-text">${escapeHTML(preview)}</span><button class="card-body-toggle" type="button" aria-expanded="false">…</button>
+          </div>
+        `;
+      } else {
+        bodyHTML = `<div class="card-body"><span class="card-body-text">${escapeHTML(preview)}</span></div>`;
+      }
+    }
+
+    // Link rendered as the word "link"
+    let linkHTML = '';
+    if (task.link) {
+      linkHTML = `<div class="card-link"><a href="${escapeHTML(task.link)}" target="_blank" rel="noopener noreferrer">link</a></div>`;
+    }
+
     card.innerHTML = `
       ${labelsHTML}
-      <div class="card-title">${escapeHTML(task.title)}</div>
+      ${titleHTML}
+      ${bodyHTML}
+      ${linkHTML}
       <div class="card-footer">
         <div class="card-indicators">
           ${indicatorsHTML}
@@ -942,6 +979,8 @@ document.addEventListener('DOMContentLoaded', () => {
       wrap.querySelector('.card-composer').classList.add('hidden');
       wrap.querySelector('.add-card-btn-trigger').classList.remove('hidden');
       wrap.querySelector('.composer-title-input').value = '';
+      wrap.querySelector('.composer-body-input').value = '';
+      wrap.querySelector('.composer-link-input').value = '';
     }
 
     // 3. Save New Card
@@ -949,21 +988,30 @@ document.addEventListener('DOMContentLoaded', () => {
       const wrap = e.target.closest('.add-card-wrap');
       const listCol = e.target.closest('.list-column');
       const listId = listCol.dataset.id;
-      const input = wrap.querySelector('.composer-title-input');
-      const title = input.value.trim();
+      const titleInput = wrap.querySelector('.composer-title-input');
+      const bodyInput = wrap.querySelector('.composer-body-input');
+      const linkInput = wrap.querySelector('.composer-link-input');
+      const title = titleInput.value.trim();
+      const description = bodyInput.value.trim();
+      const link = linkInput.value.trim();
 
-      if (!title) return;
+      if (!title && !description && !link) {
+        alert('A card must have at least a title, body, or link.');
+        return;
+      }
 
       try {
         const container = listCol.querySelector('.cards-container');
         const position = container.children.length;
-        
-        await api.createCard(listId, title, position);
-        
+
+        await api.createCard(listId, { title, description, link, position });
+
         // Reset composer
         wrap.querySelector('.card-composer').classList.add('hidden');
         wrap.querySelector('.add-card-btn-trigger').classList.remove('hidden');
-        input.value = '';
+        titleInput.value = '';
+        bodyInput.value = '';
+        linkInput.value = '';
       } catch (err) {
         alert(`Failed to create card: ${err.message}`);
       }
@@ -1022,6 +1070,30 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
+    // Expand/collapse card body preview
+    if (e.target.classList.contains('card-body-toggle')) {
+      e.stopPropagation();
+      const bodyEl = e.target.closest('.card-body');
+      const textEl = bodyEl.querySelector('.card-body-text');
+      const expanded = e.target.getAttribute('aria-expanded') === 'true';
+      if (expanded) {
+        textEl.textContent = bodyEl.dataset.preview;
+        e.target.textContent = '…';
+        e.target.setAttribute('aria-expanded', 'false');
+      } else {
+        textEl.textContent = bodyEl.dataset.full;
+        e.target.textContent = '×';
+        e.target.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+
+    // Card link click — open externally, don't open modal
+    if (e.target.closest('.card-link a')) {
+      e.stopPropagation();
+      return;
+    }
+
     // 8. Open Card Details Modal
     const cardItem = e.target.closest('.card-item');
     if (cardItem && !cardItem.classList.contains('card-ghost') && !e.target.classList.contains('avatar-circle')) {
@@ -1070,6 +1142,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.modalCardTitle.value = task.title;
       el.modalCardDuedate.value = task.due_date ? task.due_date.substring(0, 10) : '';
       el.modalCardDesc.value = task.description;
+      el.modalCardLink.value = task.link || '';
 
       const listEl = state.activeBoard.lists.find(l => l.id === task.list_id);
       el.modalListName.textContent = listEl ? listEl.name : 'Unknown';
@@ -1213,15 +1286,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   el.modalCardTitle.addEventListener('focusout', async () => {
     const newTitle = el.modalCardTitle.value.trim();
-    if (!newTitle || newTitle === state.activeCard.title) {
-      el.modalCardTitle.value = state.activeCard.title;
-      return;
-    }
+    if (newTitle === state.activeCard.title) return;
 
     try {
       await api.updateCard(state.activeCard.id, {
         title: newTitle,
         description: state.activeCard.description,
+        link: state.activeCard.link || '',
         list_id: state.activeCard.list_id,
         position: state.activeCard.position
       });
@@ -1239,13 +1310,32 @@ document.addEventListener('DOMContentLoaded', () => {
       await api.updateCard(state.activeCard.id, {
         title: state.activeCard.title,
         description: newDesc,
+        link: state.activeCard.link || '',
         list_id: state.activeCard.list_id,
         position: state.activeCard.position
       });
       state.activeCard.description = newDesc;
-      alert('Description saved successfully!');
+      alert('Body saved successfully!');
     } catch (err) {
-      alert(`Failed to save description: ${err.message}`);
+      alert(`Failed to save body: ${err.message}`);
+    }
+  });
+
+  // Save link
+  el.saveLinkBtn.addEventListener('click', async () => {
+    const newLink = el.modalCardLink.value.trim();
+    try {
+      await api.updateCard(state.activeCard.id, {
+        title: state.activeCard.title,
+        description: state.activeCard.description,
+        link: newLink,
+        list_id: state.activeCard.list_id,
+        position: state.activeCard.position
+      });
+      state.activeCard.link = newLink;
+      alert('Link saved successfully!');
+    } catch (err) {
+      alert(`Failed to save link: ${err.message}`);
     }
   });
 
@@ -1256,11 +1346,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (dateVal) {
       dueDateObj = new Date(dateVal);
     }
-    
+
     try {
       await api.updateCard(state.activeCard.id, {
         title: state.activeCard.title,
         description: state.activeCard.description,
+        link: state.activeCard.link || '',
         list_id: state.activeCard.list_id,
         position: state.activeCard.position,
         due_date: dueDateObj
@@ -1423,6 +1514,7 @@ document.addEventListener('DOMContentLoaded', () => {
       await api.updateCard(cardId, {
         title: task.title,
         description: task.description,
+        link: task.link || '',
         list_id: endListId,
         position: newPosition,
         due_date: task.due_date ? new Date(task.due_date) : null
@@ -1603,6 +1695,7 @@ document.addEventListener('DOMContentLoaded', () => {
           // Refresh modal fields
           el.modalCardTitle.value = updatedTask.title;
           el.modalCardDesc.value = updatedTask.description;
+          el.modalCardLink.value = updatedTask.link || '';
           el.modalCardDuedate.value = updatedTask.due_date ? updatedTask.due_date.substring(0, 10) : '';
           const curList = state.activeBoard.lists.find(l => l.id === updatedTask.list_id);
           el.modalListName.textContent = curList ? curList.name : 'Unknown';

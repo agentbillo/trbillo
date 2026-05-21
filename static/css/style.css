@@ -872,7 +872,62 @@ textarea {
   font-weight: 500;
   color: var(--text-primary);
   line-height: 1.4;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
+}
+
+.card-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.card-body-toggle {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  margin-left: 2px;
+  line-height: 1;
+}
+
+.card-body-toggle:hover {
+  color: var(--text-primary);
+}
+
+.card-link {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.card-link a {
+  color: var(--accent-primary, #5b8def);
+  text-decoration: underline;
+}
+
+.composer-body-input,
+.composer-link-input {
+  width: 100%;
+  margin-top: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.composer-body-input {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.composer-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  margin-bottom: 4px;
 }
 
 .card-footer {

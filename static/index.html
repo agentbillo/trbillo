@@ -190,7 +190,7 @@
     <div class="dialog-header">
       <div class="dialog-title-area">
         <span class="dialog-card-icon">🗂️</span>
-        <input type="text" id="modal-card-title" class="title-input-editable" value="Card Title">
+        <input type="text" id="modal-card-title" class="title-input-editable" value="Card Title" maxlength="128">
       </div>
       <button onclick="document.getElementById('card-detail-modal').close()" class="btn-icon" aria-label="Close modal">✖</button>
     </div>
@@ -204,12 +204,25 @@
         <!-- Description -->
         <div class="dialog-section">
           <div class="section-label">
-            <span>Description</span>
+            <span>Body</span>
           </div>
           <div class="description-edit-container">
-            <textarea id="modal-card-desc" placeholder="Add a detailed description for this task..." rows="4"></textarea>
+            <textarea id="modal-card-desc" placeholder="Add body text for this card..." rows="4" maxlength="512"></textarea>
             <div class="btn-row">
-              <button id="save-desc-btn" class="btn btn-primary btn-sm">Save Description</button>
+              <button id="save-desc-btn" class="btn btn-primary btn-sm">Save Body</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Link -->
+        <div class="dialog-section">
+          <div class="section-label">
+            <span>Link</span>
+          </div>
+          <div class="description-edit-container">
+            <input type="url" id="modal-card-link" placeholder="https://..." maxlength="256">
+            <div class="btn-row">
+              <button id="save-link-btn" class="btn btn-primary btn-sm">Save Link</button>
             </div>
           </div>
         </div>

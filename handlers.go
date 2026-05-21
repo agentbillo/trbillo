@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,26 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// validateTaskLink parses a URL and requires an http(s) scheme + host.
+// Returns the normalized URL string (or "" if input was empty), or an error.
+func validateTaskLink(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("link is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("link must start with http:// or https://")
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("link must include a host")
+	}
+	return u.String(), nil
+}
 
 // Email validation regex - stricter validation:
 // - No consecutive dots
@@ -276,8 +297,9 @@ const (
 	MaxBoardNameLen   = 100
 	MaxBoardDescLen   = 1000
 	MaxListNameLen    = 100
-	MaxTaskTitleLen   = 255
-	MaxTaskDescLen    = 5000
+	MaxTaskTitleLen   = 128
+	MaxTaskDescLen    = 512
+	MaxTaskLinkLen    = 256
 	MaxCommentLen     = 5000
 	MaxLabelNameLen   = 50
 	MaxChecklistLen   = 255
@@ -1010,6 +1032,7 @@ func DeleteListHandler(w http.ResponseWriter, r *http.Request) {
 type TaskReq struct {
 	Title       string     `json:"title"`
 	Description string     `json:"description"`
+	Link        string     `json:"link"`
 	ListID      string     `json:"list_id"`
 	Position    int        `json:"position"`
 	DueDate     *time.Time `json:"due_date"`
@@ -1037,25 +1060,45 @@ func CreateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, "Task title is required")
+	req.Title = strings.TrimSpace(req.Title)
+	req.Description = strings.TrimSpace(req.Description)
+
+	if req.Title == "" && req.Description == "" && strings.TrimSpace(req.Link) == "" {
+		writeError(w, http.StatusBadRequest, "A card must have at least a title, body, or link")
 		return
 	}
 	if len(req.Title) > MaxTaskTitleLen {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task title exceeds maximum length of %d characters", MaxTaskTitleLen))
 		return
 	}
+	if len(req.Description) > MaxTaskDescLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task body exceeds maximum length of %d characters", MaxTaskDescLen))
+		return
+	}
+	if len(req.Link) > MaxTaskLinkLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task link exceeds maximum length of %d characters", MaxTaskLinkLen))
+		return
+	}
+	normalizedLink, err := validateTaskLink(req.Link)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	t, err := CreateTask(listID, req.Title, req.Position)
+	t, err := CreateTask(listID, req.Title, req.Description, normalizedLink, req.Position)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to create task")
 		return
 	}
 
 	// Log activity
+	cardLabel := t.Title
+	if cardLabel == "" {
+		cardLabel = "(untitled)"
+	}
 	u, err := GetUserByID(userID)
 	if err == nil {
-		_, _ = LogActivity(list.BoardID, userID, u.Username, "create_task", fmt.Sprintf("added card %q to %s", t.Title, list.Name))
+		_, _ = LogActivity(list.BoardID, userID, u.Username, "create_task", fmt.Sprintf("added card %q to %s", cardLabel, list.Name))
 	}
 
 	// Broadcast WS
@@ -1122,24 +1165,31 @@ func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle partial updates
-	if req.Title == "" {
-		req.Title = t.Title
-	}
-	if r.Header.Get("Content-Type") != "application/json" { // fallback
-		req.Description = t.Description
-	}
+	req.Title = strings.TrimSpace(req.Title)
+	req.Description = strings.TrimSpace(req.Description)
 	if req.ListID == "" {
 		req.ListID = t.ListID
 	}
 
-	// Validate lengths
+	if req.Title == "" && req.Description == "" && strings.TrimSpace(req.Link) == "" {
+		writeError(w, http.StatusBadRequest, "A card must have at least a title, body, or link")
+		return
+	}
 	if len(req.Title) > MaxTaskTitleLen {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task title exceeds maximum length of %d characters", MaxTaskTitleLen))
 		return
 	}
 	if len(req.Description) > MaxTaskDescLen {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task description exceeds maximum length of %d characters", MaxTaskDescLen))
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task body exceeds maximum length of %d characters", MaxTaskDescLen))
+		return
+	}
+	if len(req.Link) > MaxTaskLinkLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Task link exceeds maximum length of %d characters", MaxTaskLinkLen))
+		return
+	}
+	normalizedLink, err := validateTaskLink(req.Link)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1153,7 +1203,7 @@ func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Perform update
-	if err := UpdateTask(taskID, req.Title, req.Description, req.ListID, req.Position, req.DueDate); err != nil {
+	if err := UpdateTask(taskID, req.Title, req.Description, normalizedLink, req.ListID, req.Position, req.DueDate); err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to update task")
 		return
 	}
