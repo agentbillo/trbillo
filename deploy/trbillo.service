@@ -1,0 +1,36 @@
+[Unit]
+Description=Trbillo Collaborative Kanban Board
+After=network.target
+
+[Service]
+Type=simple
+User=trbillo
+Group=trbillo
+WorkingDirectory=/var/lib/trbillo
+ExecStart=/opt/trbillo/trbillo
+Restart=on-failure
+RestartSec=5
+
+# Configuration
+Environment=BASE_PATH=/trbillo
+Environment=PORT=8080
+Environment=DB_PATH=/var/lib/trbillo/trbillo.db
+Environment=STATIC_DIR=/opt/trbillo/static
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/lib/trbillo
+
+[Install]
+WantedBy=multi-user.target

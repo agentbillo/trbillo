@@ -26,23 +26,31 @@ Browser → https://slowbase.com/trbillo/...
           /var/lib/trbillo/trbillo.db
 ```
 
-## Building the install bundle
+## Building and uploading the bundle
 
-From a dev machine with Go installed:
+From a dev machine with Go installed, the one-shot path is:
 
 ```bash
-# Cross-compile static Linux amd64 binary
+./deploy.sh root@your-server     # or user@host
+```
+
+That cross-compiles the binary, bundles static assets + scaffolding,
+tars it, and `scp`s the tarball to `~/` on the target.
+
+`deploy.sh` reads the install scaffolding (systemd unit, Caddy snippet,
+install script, README) from the tracked `deploy/` directory.
+
+If you want the manual equivalent:
+
+```bash
 mkdir -p dist/trbillo-install
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
   go build -ldflags="-s -w" -o dist/trbillo-install/trbillo .
-
-# Copy static assets and bundle scaffolding (already checked into dist
-# scaffolding files: trbillo.service, caddy-fragment.conf, install.sh,
-# README.md — copy from a prior bundle or recreate)
 cp -r static dist/trbillo-install/static
-
-# Tar it up
-cd dist && tar czf trbillo-install.tar.gz trbillo-install
+cp deploy/install.sh deploy/trbillo.service \
+   deploy/caddy-fragment.conf deploy/README.md dist/trbillo-install/
+chmod +x dist/trbillo-install/install.sh
+tar -czf dist/trbillo-install.tar.gz -C dist trbillo-install
 ```
 
 The resulting `dist/trbillo-install.tar.gz` is ~4.4 MB and contains:
@@ -60,11 +68,16 @@ The resulting `dist/trbillo-install.tar.gz` is ~4.4 MB and contains:
 
 ### 1. Upload and run installer
 
-```bash
-# From dev machine
-scp dist/trbillo-install.tar.gz user@slowbase.com:~/
+If you used `./deploy.sh user@server` the tarball is already in `~/` on
+the server. Otherwise upload manually:
 
-# On server
+```bash
+scp dist/trbillo-install.tar.gz user@slowbase.com:~/
+```
+
+Then on the server:
+
+```bash
 tar xzf trbillo-install.tar.gz
 cd trbillo-install
 sudo ./install.sh
