@@ -1,9 +1,12 @@
 package main
 
 import (
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,6 +16,29 @@ func envOr(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// computeStaticVersion returns the latest mtime of any file under dir as a
+// unix-seconds string. Used as a cache-busting query string on asset URLs.
+func computeStaticVersion(dir string) string {
+	var maxMtime int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		if t := info.ModTime().Unix(); t > maxMtime {
+			maxMtime = t
+		}
+		return nil
+	})
+	if maxMtime == 0 {
+		return strconv.FormatInt(time.Now().Unix(), 10)
+	}
+	return strconv.FormatInt(maxMtime, 10)
 }
 
 func main() {
@@ -45,12 +71,18 @@ func main() {
 		}
 	}()
 
-	// Read index.html once at startup and template in the base path
+	// Read index.html once at startup and template in the base path and
+	// a cache-busting version string derived from the static dir mtime.
 	indexBytes, err := os.ReadFile(staticDir + "/index.html")
 	if err != nil {
 		log.Fatalf("Failed to read index.html: %v", err)
 	}
-	indexHTML := []byte(strings.ReplaceAll(string(indexBytes), "{{BASE_PATH}}", basePath))
+	version := computeStaticVersion(staticDir)
+	indexStr := string(indexBytes)
+	indexStr = strings.ReplaceAll(indexStr, "{{BASE_PATH}}", basePath)
+	indexStr = strings.ReplaceAll(indexStr, "{{VERSION}}", version)
+	indexHTML := []byte(indexStr)
+	log.Printf("Static asset version: %s", version)
 
 	// Setup Mux (Router) using Go 1.22+ native routing enhancements
 	mux := http.NewServeMux()
@@ -59,6 +91,7 @@ func main() {
 	// --- STATIC ASSETS ---
 	mux.HandleFunc("GET "+p+"/{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
 		w.Write(indexHTML)
 	})
 	fileServer := http.FileServer(http.Dir(staticDir))
