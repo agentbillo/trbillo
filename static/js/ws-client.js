@@ -14,7 +14,8 @@ class TrbilloWSClient {
     
     this.boardId = boardId;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws?board_id=${boardId}`;
+    const base = window.BASE_PATH || '';
+    const wsUrl = `${protocol}//${window.location.host}${base}/api/ws?board_id=${boardId}`;
     
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     this.socket = new WebSocket(wsUrl);
@@ -97,7 +98,8 @@ class TrbilloUserWSClient {
     this.disconnect();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/ws/user`;
+    const base = window.BASE_PATH || '';
+    const wsUrl = `${protocol}//${window.location.host}${base}/api/ws/user`;
 
     console.log(`Connecting to User WebSocket: ${wsUrl}`);
     this.socket = new WebSocket(wsUrl);

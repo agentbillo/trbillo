@@ -37,3 +37,6 @@ trbillo_server
 trbillo_server_new
 *.db
 *conflicted copy*
+
+# Build output
+dist/

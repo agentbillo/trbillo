@@ -9,7 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <!-- Stylesheet -->
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="{{BASE_PATH}}/static/css/style.css">
+  <script>window.BASE_PATH = "{{BASE_PATH}}";</script>
 </head>
 <body class="dark-theme">
   <!-- App Shell -->
@@ -436,8 +437,8 @@
   </dialog>
 
   <!-- Scripts -->
-  <script src="/static/js/ws-client.js"></script>
-  <script src="/static/js/dnd.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="{{BASE_PATH}}/static/js/ws-client.js"></script>
+  <script src="{{BASE_PATH}}/static/js/dnd.js"></script>
+  <script src="{{BASE_PATH}}/static/js/app.js"></script>
 </body>
 </html>

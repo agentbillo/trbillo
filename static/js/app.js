@@ -105,6 +105,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // --- API CALLS (AJAX) ---
+  const BASE = window.BASE_PATH || '';
   const api = {
     async request(url, method = 'GET', data = null) {
       const options = { method, headers: {} };
@@ -112,7 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(data);
       }
-      const res = await fetch(url, options);
+      const res = await fetch(BASE + url, options);
       if (res.status === 401) {
         showAuth();
         throw new Error('Unauthorized or session expired');
