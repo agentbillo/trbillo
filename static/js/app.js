@@ -91,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
     postCommentBtn: document.getElementById('post-comment-btn'),
     commentsList: document.getElementById('comments-list'),
     modalCardDuedate: document.getElementById('modal-card-duedate'),
-    saveDuedateBtn: document.getElementById('save-duedate-btn'),
+    duedateSaveStatus: document.getElementById('duedate-save-status'),
     modalCardLabels: document.getElementById('modal-card-labels'),
     toggleLabelMenuBtn: document.getElementById('toggle-label-menu-btn'),
     labelMenuDropdown: document.getElementById('label-menu-dropdown'),
@@ -1305,6 +1305,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.modalCardLink.value = task.link || '';
       el.bodySaveStatus.textContent = '';
       el.linkSaveStatus.textContent = '';
+      el.duedateSaveStatus.textContent = '';
 
       const listEl = state.activeBoard.lists.find(l => l.id === task.list_id);
       el.modalListName.textContent = listEl ? listEl.name : 'Unknown';
@@ -1513,13 +1514,10 @@ document.addEventListener('DOMContentLoaded', () => {
     el.linkSaveStatus.textContent = '';
   });
 
-  // Save due date
-  el.saveDuedateBtn.addEventListener('click', async () => {
+  // Auto-save due date on change
+  el.modalCardDuedate.addEventListener('change', async () => {
     const dateVal = el.modalCardDuedate.value;
-    let dueDateObj = null;
-    if (dateVal) {
-      dueDateObj = new Date(dateVal);
-    }
+    const dueDateObj = dateVal ? new Date(dateVal) : null;
 
     try {
       await api.updateCard(state.activeCard.id, {
@@ -1530,13 +1528,10 @@ document.addEventListener('DOMContentLoaded', () => {
         position: state.activeCard.position,
         due_date: dueDateObj
       });
-      if (dueDateObj) {
-        state.activeCard.due_date = dueDateObj.toISOString();
-      } else {
-        state.activeCard.due_date = null;
-      }
-      alert('Due date updated!');
+      state.activeCard.due_date = dueDateObj ? dueDateObj.toISOString() : null;
+      el.duedateSaveStatus.textContent = 'saved';
     } catch (err) {
+      el.duedateSaveStatus.textContent = '';
       alert(`Failed to save date: ${err.message}`);
     }
   });
