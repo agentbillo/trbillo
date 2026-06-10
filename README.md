@@ -36,6 +36,28 @@ Environment variables (all optional):
 | `DB_PATH` | `./trbillo.db` | SQLite file location |
 | `STATIC_DIR` | `./static` | Frontend assets directory |
 
+## Resetting a password
+
+There is no self-service "forgot password" flow (the server sends no
+email). Instead, the binary doubles as an admin CLI:
+
+```bash
+./trbillo -reset-password alice        # or go run . -reset-password alice
+```
+
+Accepts a username or email, prompts for the new password twice (input
+hidden), and logs the user out of all existing sessions. It uses
+`DB_PATH` to find the database, so on a production install run it as
+the service user with the production path:
+
+```bash
+sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
+  /opt/trbillo/trbillo -reset-password alice
+```
+
+Safe to run while the server is up. For scripted use, pipe the new
+password as a single line on stdin.
+
 ## Production deployment
 
 See [DEPLOY.md](DEPLOY.md) for the full guide: cross-compile, systemd
