@@ -51,7 +51,7 @@ SIZE=$(du -h "$TARBALL" | cut -f1)
 echo "    $TARBALL ($SIZE)"
 
 echo "==> Uploading to $TARGET"
-scp "$TARBALL" "$TARGET"
+scp -O "$TARBALL" "$TARGET"
 
 echo
 echo "Done. To install or upgrade on the server:"
