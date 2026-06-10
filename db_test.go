@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestDatabaseOperations(t *testing.T) {
@@ -73,7 +74,7 @@ func TestDatabaseOperations(t *testing.T) {
 
 	// 7. Test Task Creation
 	todoList := lists[0]
-	task, err := CreateTask(todoList.ID, "Write unit tests", 0)
+	task, err := CreateTask(todoList.ID, "Write unit tests", "", "", 0)
 	if err != nil {
 		t.Fatalf("Failed to create task: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestDatabaseOperations(t *testing.T) {
 
 	// 8. Test Task Update
 	newDesc := "Write more robust unit tests and verify they pass."
-	err = UpdateTask(task.ID, "Write unit tests (Updated)", newDesc, todoList.ID, 0, nil)
+	err = UpdateTask(task.ID, "Write unit tests (Updated)", newDesc, "", todoList.ID, 0, nil)
 	if err != nil {
 		t.Fatalf("Failed to update task: %v", err)
 	}
@@ -111,5 +112,42 @@ func TestDatabaseOperations(t *testing.T) {
 	}
 	if len(activities) < 1 {
 		t.Errorf("Expected at least 1 board activity, got %d", len(activities))
+	}
+}
+
+func TestUpdateUserPasswordAndDeleteSessions(t *testing.T) {
+	if err := InitDB(":memory:"); err != nil {
+		t.Fatalf("Failed to initialize in-memory DB: %v", err)
+	}
+	defer DB.Close()
+
+	user, err := CreateUser("pwuser", "pw@example.com", "old_hash", "#6366f1")
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	if err := UpdateUserPassword(user.ID, "new_hash"); err != nil {
+		t.Fatalf("Failed to update password: %v", err)
+	}
+	updated, err := GetUserByID(user.ID)
+	if err != nil {
+		t.Fatalf("Failed to retrieve user: %v", err)
+	}
+	if updated.PasswordHash != "new_hash" {
+		t.Errorf("Password hash not updated. Got %s", updated.PasswordHash)
+	}
+
+	if err := UpdateUserPassword("no-such-id", "x"); err == nil {
+		t.Errorf("Expected error updating password for unknown user, got nil")
+	}
+
+	if err := CreateSession("tok1", user.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("Failed to create session: %v", err)
+	}
+	if err := DeleteUserSessions(user.ID); err != nil {
+		t.Fatalf("Failed to delete user sessions: %v", err)
+	}
+	if _, err := GetSession("tok1"); err == nil {
+		t.Errorf("Expected session to be gone after DeleteUserSessions")
 	}
 }

@@ -1,6 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"database/sql"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -9,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/term"
 )
 
 func envOr(key, defaultVal string) string {
@@ -41,7 +50,87 @@ func computeStaticVersion(dir string) string {
 	return strconv.FormatInt(maxMtime, 10)
 }
 
+// resetPassword implements the -reset-password CLI mode: prompts for a new
+// password and replaces the stored hash for the given username or email.
+func resetPassword(dbPath, identifier string) error {
+	if err := InitDB(dbPath); err != nil {
+		return fmt.Errorf("opening database at %s: %w", dbPath, err)
+	}
+	defer DB.Close()
+	// Wait out the running server's write lock instead of failing immediately.
+	if _, err := DB.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
+		return err
+	}
+
+	u, err := GetUserByUsernameOrEmail(identifier)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("no user with username or email %q", identifier)
+	}
+	if err != nil {
+		return err
+	}
+
+	password, err := promptNewPassword()
+	if err != nil {
+		return err
+	}
+	if len(password) < MinPasswordLen {
+		return fmt.Errorf("password must be at least %d characters", MinPasswordLen)
+	}
+	if len(password) > MaxPasswordLen {
+		return fmt.Errorf("password must be %d characters or less", MaxPasswordLen)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	if err := UpdateUserPassword(u.ID, string(hash)); err != nil {
+		return err
+	}
+	if err := DeleteUserSessions(u.ID); err != nil {
+		return fmt.Errorf("password updated, but clearing existing sessions failed: %w", err)
+	}
+
+	fmt.Printf("Password updated for %s (%s); all existing sessions logged out.\n", u.Username, u.Email)
+	return nil
+}
+
+// promptNewPassword reads the new password without echo when stdin is a
+// terminal (asking twice to confirm), or takes a single line when piped.
+func promptNewPassword() (string, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", err
+		}
+		return strings.TrimRight(line, "\r\n"), nil
+	}
+
+	fmt.Print("New password: ")
+	first, err := term.ReadPassword(fd)
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	fmt.Print("Confirm password: ")
+	second, err := term.ReadPassword(fd)
+	fmt.Println()
+	if err != nil {
+		return "", err
+	}
+	if string(first) != string(second) {
+		return "", errors.New("passwords do not match")
+	}
+	return string(first), nil
+}
+
 func main() {
+	resetTarget := flag.String("reset-password", "",
+		"reset the password for the given username or email, then exit")
+	flag.Parse()
+
 	// Environment configuration
 	basePath := strings.TrimRight(os.Getenv("BASE_PATH"), "/")
 	if basePath != "" && !strings.HasPrefix(basePath, "/") {
@@ -50,6 +139,14 @@ func main() {
 	port := envOr("PORT", "8080")
 	dbPath := envOr("DB_PATH", "./trbillo.db")
 	staticDir := envOr("STATIC_DIR", "./static")
+
+	if *resetTarget != "" {
+		if err := resetPassword(dbPath, *resetTarget); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Initialize Database
 	if err := InitDB(dbPath); err != nil {

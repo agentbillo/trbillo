@@ -204,6 +204,21 @@ func GetUserByUsernameOrEmail(identifier string) (*User, error) {
 	return u, nil
 }
 
+func UpdateUserPassword(userID, passwordHash string) error {
+	res, err := DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("user not found")
+	}
+	return nil
+}
+
 // --- SESSION OPERATIONS ---
 
 func CreateSession(token, userID string, expiresAt time.Time) error {
@@ -225,6 +240,12 @@ func GetSession(token string) (*Session, error) {
 func DeleteSession(token string) error {
 	query := `DELETE FROM sessions WHERE token = ?`
 	_, err := DB.Exec(query, token)
+	return err
+}
+
+// DeleteUserSessions logs the user out everywhere by removing all their sessions.
+func DeleteUserSessions(userID string) error {
+	_, err := DB.Exec(`DELETE FROM sessions WHERE user_id = ?`, userID)
 	return err
 }
 

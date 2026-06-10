@@ -172,6 +172,27 @@ Drop in a newer bundle on the server and re-run `sudo ./install.sh`. The
 script stops the service, replaces the binary and static files, and
 restarts. The SQLite DB in `/var/lib/trbillo/` is untouched.
 
+## Resetting a user's password
+
+The binary doubles as an admin CLI:
+
+```bash
+sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
+  /opt/trbillo/trbillo -reset-password alice
+```
+
+Accepts a username or email. Prompts for the new password twice (input
+hidden), writes a fresh bcrypt hash, and logs the user out of all
+existing sessions. Safe to run while the service is up — it opens the
+same SQLite file alongside the server and waits out any write lock.
+
+For scripted use, pipe the password on stdin (one line):
+
+```bash
+echo 'new-password' | sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
+  /opt/trbillo/trbillo -reset-password alice
+```
+
 ## Useful commands
 
 ```bash

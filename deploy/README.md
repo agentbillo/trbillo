@@ -59,6 +59,10 @@ systemctl status trbillo
 journalctl -u trbillo -f               # tail logs
 sudo systemctl restart trbillo
 sqlite3 /var/lib/trbillo/trbillo.db    # poke at the DB
+
+# Reset a user's password (prompts twice, hidden input; username or email)
+sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
+  /opt/trbillo/trbillo -reset-password alice
 ```
 
 ## Configuration
