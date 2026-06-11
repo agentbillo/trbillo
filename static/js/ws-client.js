@@ -91,10 +91,10 @@ class TrbilloUserWSClient {
   }
 
   connect() {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      return; // Already connected
-    }
-
+    // Always tear down any existing socket first. It may have been
+    // authenticated as a previous user (e.g. after a session expiry / 401 and
+    // re-login as someone else); reusing it would deliver that user's events
+    // to the current UI — including a "removed_from_board" meant for them.
     this.disconnect();
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

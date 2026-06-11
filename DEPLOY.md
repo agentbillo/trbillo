@@ -183,9 +183,13 @@ sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
 ```
 
 Logging in as `admin` opens the admin panel: a read-only view into all
-boards plus user management (create/delete users, set passwords, remove
-board members, reassign board owners). See the project README for
-details.
+boards, user management (create/delete users, set passwords, remove
+board members, reassign board owners), and team management. Signups
+require an invitation code that resolves to a team — the built-in
+`PUBLIC` team (initial code `PUBLIC`) gives 30-day trial accounts
+(wiped automatically, boards included), while admin-created teams give
+permanent accounts with team visibility. Each team's signup code can be
+rotated without affecting members. See the project README for details.
 
 ## Resetting a user's password
 

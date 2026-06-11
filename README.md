@@ -12,6 +12,9 @@ binary, SQLite for storage, no JavaScript build step, no external services.
 - Real-time multi-user sync over WebSockets
 - Per-user accounts with bcrypt-hashed passwords, server-side sessions,
   CSRF protection, and Origin-based same-site enforcement
+- Invitation-code signups: an open `PUBLIC` code for 30-day trial
+  accounts, plus admin-created teams with rotatable signup codes whose
+  members can find each other when inviting people to boards
 - Themable UI (dark, light, autumn, spring)
 - Mountable under a URL subpath (e.g. `/trbillo`) via `BASE_PATH`, so it
   can sit alongside other apps on one domain
@@ -58,6 +61,33 @@ sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
 Safe to run while the server is up. For scripted use, pipe the new
 password as a single line on stdin.
 
+## Teams and invitation codes
+
+Creating an account requires an invitation code. Each code belongs to a
+**team**: the code is the secret people type at signup, the team is who
+they permanently become. Because they're separate, the admin can rotate
+a team's code at any time (say, if it leaks or attracts spam) without
+affecting existing members — only future signups need the new code.
+
+- The **`PUBLIC` team** always exists (seeded at startup with code
+  `PUBLIC`) and lets anybody register — that's what makes a deployment
+  work as an open demo. PUBLIC accounts are **trial accounts**: an
+  hourly server job deletes them 30 days after signup, *including any
+  boards they own*, and they see a banner showing their deletion date.
+  Getting spammed? Rotate the PUBLIC code. To keep a trial user, the
+  admin can move them to a real team from the Users tab.
+- **Other teams** are created by the admin (Teams tab) with a name
+  (e.g. `Snakkos`) and a code (e.g. `LUNCHTIME`). Their accounts are
+  permanent, and teammates see each other in the board invite dialog's
+  "Your Team" list — by team name only, so people can be invited across
+  boards without anyone learning a signup code.
+- Accounts with **no team** (the admin user, accounts created by the
+  admin without a team, and accounts that predate this feature) are
+  permanent and belong to no team.
+
+Deleting a team closes it for new signups; existing accounts keep their
+team and visibility.
+
 ## Admin user
 
 The username `admin` is reserved: nobody can register it, and the server
@@ -78,10 +108,14 @@ dashboard, with two tabs:
   in a strictly read-only view (no card/list editing, no drag-and-drop),
   inspect each board's membership, remove members, and transfer board
   ownership (the previous owner stays on the board as a member).
-- **Users** — a sortable, searchable table of every account. The admin
-  can create users, set passwords (logging that user out everywhere),
+- **Users** — a sortable, searchable table of every account with its
+  team. The admin can create users (optionally on a team), change a
+  user's team (e.g. move someone from PUBLIC onto a real team to make
+  them permanent), set passwords (logging that user out everywhere),
   and delete users. Deleting a user who still owns boards is blocked
   until their boards are reassigned or deleted.
+- **Teams** — create teams (name + signup code), rotate a team's code,
+  see member counts, and delete teams (PUBLIC is protected).
 
 The admin account itself cannot be deleted, cannot own or join boards,
 and cannot edit board content — it is a management account, not a

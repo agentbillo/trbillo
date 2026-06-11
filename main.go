@@ -206,12 +206,20 @@ func main() {
 	go HubInstance.Run()
 	log.Println("WebSocket Hub started")
 
-	// Start background routine for cleaning expired sessions every hour
+	// Clean up expired sessions and expired PUBLIC trial accounts hourly
+	// (and once at startup so restarts don't postpone the trial wipe)
+	cleanup := func() {
+		CleanExpiredSessions()
+		if _, err := CleanExpiredTrialUsers(); err != nil {
+			log.Printf("Trial cleanup error: %v", err)
+		}
+	}
+	cleanup()
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			CleanExpiredSessions()
+			cleanup()
 		}
 	}()
 
@@ -292,6 +300,9 @@ func main() {
 	mux.HandleFunc("PATCH "+p+"/api/checklist/{id}", protectedHandler(UpdateChecklistItemHandler))
 	mux.HandleFunc("DELETE "+p+"/api/checklist/{id}", protectedHandler(DeleteChecklistItemHandler))
 
+	// --- TEAM ROUTING ---
+	mux.HandleFunc("GET "+p+"/api/team", authMiddleware(TeamHandler))
+
 	// --- AUDIT LOG & REAL-TIME ROUTING ---
 	mux.HandleFunc("GET "+p+"/api/boards/{id}/activities", authMiddleware(GetBoardActivitiesHandler))
 	mux.HandleFunc("GET "+p+"/api/ws", WebSocketHandler)
@@ -310,8 +321,13 @@ func main() {
 	mux.HandleFunc("POST "+p+"/api/admin/users", adminWrite(AdminCreateUserHandler))
 	mux.HandleFunc("DELETE "+p+"/api/admin/users/{id}", adminWrite(AdminDeleteUserHandler))
 	mux.HandleFunc("POST "+p+"/api/admin/users/{id}/password", adminWrite(AdminSetUserPasswordHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/users/{id}/team", adminWrite(AdminSetUserTeamHandler))
 	mux.HandleFunc("DELETE "+p+"/api/admin/boards/{id}/members/{user_id}", adminWrite(AdminRemoveBoardMemberHandler))
 	mux.HandleFunc("POST "+p+"/api/admin/boards/{id}/owner", adminWrite(AdminSetBoardOwnerHandler))
+	mux.HandleFunc("GET "+p+"/api/admin/teams", adminRead(AdminListTeamsHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/teams", adminWrite(AdminCreateTeamHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/teams/{name}/code", adminWrite(AdminSetTeamCodeHandler))
+	mux.HandleFunc("DELETE "+p+"/api/admin/teams/{name}", adminWrite(AdminDeleteTeamHandler))
 
 	// Start Server
 	addr := ":" + port

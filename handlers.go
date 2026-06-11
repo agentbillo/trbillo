@@ -52,6 +52,17 @@ var hexColorRegex = regexp.MustCompile(`^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 // UUID validation regex
 var uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// Signup codes: uppercase letters, digits, dashes; 3-32 chars
+var inviteCodeRegex = regexp.MustCompile(`^[A-Z0-9-]{3,32}$`)
+
+func normalizeInviteCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
+// Team names: must start alphanumeric; letters, digits, spaces, dashes,
+// underscores; up to 50 chars. Kept URL-path-safe for admin routes.
+var teamNameRegex = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 _-]{0,49}$`)
+
 // Rate limiter for auth endpoints
 type rateLimiter struct {
 	mu       sync.Mutex
@@ -338,9 +349,10 @@ const (
 // --- AUTH HANDLERS ---
 
 type RegisterReq struct {
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Username   string `json:"username"`
+	Email      string `json:"email"`
+	Password   string `json:"password"`
+	InviteCode string `json:"invite_code"`
 }
 
 // pickAvatarColor returns a random aesthetic avatar background color.
@@ -407,6 +419,22 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invitation code is required and must resolve to a team
+	req.InviteCode = normalizeInviteCode(req.InviteCode)
+	if req.InviteCode == "" {
+		writeError(w, http.StatusBadRequest, "Invitation code is required")
+		return
+	}
+	team, err := GetTeamNameByCode(req.InviteCode)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusBadRequest, "Invalid invitation code")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to verify invitation code")
+		return
+	}
+
 	// Password hashing
 	pwHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -414,7 +442,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor())
+	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor(), team)
 	if err != nil {
 		writeError(w, http.StatusConflict, "Username or Email already exists")
 		return
@@ -469,7 +497,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	// Set Cookie
 	setSessionCookie(w, r, token, expiresAt)
 
-	writeJSON(w, http.StatusOK, u)
+	writeJSON(w, http.StatusOK, buildMeResponse(u))
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
@@ -487,6 +515,17 @@ func LogoutHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Logged out successfully"})
 }
 
+// buildMeResponse augments a user with their own team and trial status.
+func buildMeResponse(u *User) MeResponse {
+	resp := MeResponse{User: u, Team: u.Team}
+	if u.Team == PublicTeam {
+		resp.IsTrial = true
+		expires := u.CreatedAt.Add(TrialDuration)
+		resp.TrialExpiresAt = &expires
+	}
+	return resp
+}
+
 func MeHandler(w http.ResponseWriter, r *http.Request) {
 	userID := getUserID(r)
 	u, err := GetUserByID(userID)
@@ -494,7 +533,7 @@ func MeHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "User not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, u)
+	writeJSON(w, http.StatusOK, buildMeResponse(u))
 }
 
 // --- BOARD HANDLERS ---
@@ -1842,6 +1881,31 @@ func ListTaskCommentsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, comments)
 }
 
+// --- TEAM HANDLER ---
+
+// TeamHandler returns the caller's team name and teammates. The public team
+// and team-less accounts get an empty result. The team's signup code is
+// never included — teammates can find each other without learning it.
+func TeamHandler(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	team, err := GetUserTeam(userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to look up team")
+		return
+	}
+	if team == "" || team == PublicTeam {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"team": "", "users": []*User{}})
+		return
+	}
+
+	users, err := ListTeamUsers(team)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch team members")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"team": team, "users": users})
+}
+
 // --- ACTIVITIES & WS HANDLERS ---
 
 func GetBoardActivitiesHandler(w http.ResponseWriter, r *http.Request) {
@@ -1973,8 +2037,15 @@ func AdminGetBoardMembersHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, members)
 }
 
+type AdminCreateUserReq struct {
+	Username string `json:"username"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Team     string `json:"team"`
+}
+
 func AdminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
-	var req RegisterReq
+	var req AdminCreateUserReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
 		return
@@ -2009,19 +2080,146 @@ func AdminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional team: empty means a permanent account with no team
+	req.Team = strings.TrimSpace(req.Team)
+	if req.Team != "" {
+		teamOK, err := TeamExists(req.Team)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to verify team")
+			return
+		}
+		if !teamOK {
+			writeError(w, http.StatusBadRequest, "Team does not exist")
+			return
+		}
+	}
+
 	pwHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to hash password")
 		return
 	}
 
-	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor())
+	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor(), req.Team)
 	if err != nil {
 		writeError(w, http.StatusConflict, "Username or Email already exists")
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, u)
+}
+
+// --- ADMIN TEAM HANDLERS ---
+
+func AdminListTeamsHandler(w http.ResponseWriter, r *http.Request) {
+	teams, err := ListTeams()
+	if err != nil {
+		log.Printf("ListTeams error: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch teams")
+		return
+	}
+	writeJSON(w, http.StatusOK, teams)
+}
+
+type AdminTeamReq struct {
+	Name string `json:"name"`
+	Code string `json:"code"`
+}
+
+// validateTeamCode normalizes and checks a signup code, writing an error
+// response and returning "" when it is invalid or already taken.
+func validateTeamCode(w http.ResponseWriter, raw string) string {
+	code := normalizeInviteCode(raw)
+	if !inviteCodeRegex.MatchString(code) {
+		writeError(w, http.StatusBadRequest, "Codes must be 3-32 characters: letters, numbers, and dashes")
+		return ""
+	}
+	inUse, err := CodeInUse(code)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to verify code")
+		return ""
+	}
+	if inUse {
+		writeError(w, http.StatusConflict, "That code is already in use by another team")
+		return ""
+	}
+	return code
+}
+
+func AdminCreateTeamHandler(w http.ResponseWriter, r *http.Request) {
+	var req AdminTeamReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if !teamNameRegex.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "Team names must start with a letter or number and may contain letters, numbers, spaces, dashes, and underscores (max 50)")
+		return
+	}
+	exists, err := TeamExists(name)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to verify team")
+		return
+	}
+	if exists {
+		writeError(w, http.StatusConflict, "Team already exists")
+		return
+	}
+
+	code := validateTeamCode(w, req.Code)
+	if code == "" {
+		return
+	}
+
+	if err := CreateTeam(name, code); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create team")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"name": name, "code": code})
+}
+
+func AdminSetTeamCodeHandler(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	var req AdminTeamReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	code := validateTeamCode(w, req.Code)
+	if code == "" {
+		return
+	}
+
+	// Rotating the code does not touch team members — they joined the team,
+	// not the code.
+	if err := UpdateTeamCode(name, code); err != nil {
+		writeError(w, http.StatusNotFound, "Team not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "code": code})
+}
+
+func AdminDeleteTeamHandler(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == PublicTeam {
+		writeError(w, http.StatusBadRequest, "The public team cannot be deleted")
+		return
+	}
+
+	// Existing users keep their team membership and visibility; deleting a
+	// team only closes it for new signups.
+	if err := DeleteTeam(name); err != nil {
+		writeError(w, http.StatusNotFound, "Team not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Team %s deleted", name)})
 }
 
 type AdminPasswordReq struct {
@@ -2068,6 +2266,50 @@ func AdminSetUserPasswordHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Password updated for %s", u.Username)})
+}
+
+type AdminUserTeamReq struct {
+	Team string `json:"team"`
+}
+
+func AdminSetUserTeamHandler(w http.ResponseWriter, r *http.Request) {
+	targetID := r.PathValue("id")
+	u, err := GetUserByID(targetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	if u.Username == AdminUsername {
+		writeError(w, http.StatusBadRequest, "The admin user cannot be assigned to a team")
+		return
+	}
+
+	var req AdminUserTeamReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	// Empty team = remove from any team (permanent, no team)
+	req.Team = strings.TrimSpace(req.Team)
+	if req.Team != "" {
+		teamOK, err := TeamExists(req.Team)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to verify team")
+			return
+		}
+		if !teamOK {
+			writeError(w, http.StatusBadRequest, "Team does not exist")
+			return
+		}
+	}
+
+	if err := UpdateUserTeam(u.ID, req.Team); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update team")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"team": req.Team})
 }
 
 func AdminDeleteUserHandler(w http.ResponseWriter, r *http.Request) {

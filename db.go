@@ -137,6 +137,11 @@ func migrate() error {
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY(board_id) REFERENCES boards(id) ON DELETE CASCADE
 		);`,
+		`CREATE TABLE IF NOT EXISTS teams (
+			name TEXT PRIMARY KEY,
+			code TEXT UNIQUE NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, schema := range schemas {
@@ -151,6 +156,8 @@ func migrate() error {
 		`ALTER TABLE boards ADD COLUMN icon TEXT NOT NULL DEFAULT '📋'`,
 		`ALTER TABLE boards ADD COLUMN updated_at TIMESTAMP`,
 		`ALTER TABLE tasks ADD COLUMN link TEXT NOT NULL DEFAULT ''`,
+		// Empty team = permanent account with no team (admin, pre-team users)
+		`ALTER TABLE users ADD COLUMN team TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, migration := range optionalMigrations {
@@ -163,21 +170,40 @@ func migrate() error {
 		}
 	}
 
+	// Best-effort conversion from the short-lived invite_codes schema, where
+	// the code doubled as the team identity. Errors are expected and ignored
+	// on databases that never had it.
+	legacyMigrations := []string{
+		`INSERT OR IGNORE INTO teams (name, code, created_at) SELECT code, code, created_at FROM invite_codes`,
+		`UPDATE users SET team = invite_code WHERE team = '' AND invite_code <> ''`,
+		`DROP TABLE IF EXISTS invite_codes`,
+	}
+	for _, migration := range legacyMigrations {
+		_, _ = DB.Exec(migration)
+	}
+
+	// The PUBLIC team always exists so open signups work out of the box.
+	// OR IGNORE keeps an operator-rotated code (e.g. PUBLIC999) on restart.
+	if _, err := DB.Exec(`INSERT OR IGNORE INTO teams (name, code, created_at) VALUES (?, ?, ?)`, PublicTeam, PublicTeam, time.Now()); err != nil {
+		return fmt.Errorf("seeding public team: %w", err)
+	}
+
 	return nil
 }
 
 // --- USER OPERATIONS ---
 
-func CreateUser(username, email, passwordHash, avatarColor string) (*User, error) {
+func CreateUser(username, email, passwordHash, avatarColor, team string) (*User, error) {
 	u := &User{
 		ID:          uuid.New().String(),
 		Username:    username,
 		Email:       email,
 		AvatarColor: avatarColor,
+		Team:        team,
 		CreatedAt:   time.Now(),
 	}
-	query := `INSERT INTO users (id, username, email, password_hash, avatar_color, created_at) VALUES (?, ?, ?, ?, ?, ?)`
-	_, err := DB.Exec(query, u.ID, u.Username, u.Email, passwordHash, u.AvatarColor, u.CreatedAt)
+	query := `INSERT INTO users (id, username, email, password_hash, avatar_color, team, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+	_, err := DB.Exec(query, u.ID, u.Username, u.Email, passwordHash, u.AvatarColor, u.Team, u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -186,8 +212,8 @@ func CreateUser(username, email, passwordHash, avatarColor string) (*User, error
 
 func GetUserByID(id string) (*User, error) {
 	u := &User{}
-	query := `SELECT id, username, email, password_hash, avatar_color, created_at FROM users WHERE id = ?`
-	err := DB.QueryRow(query, id).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarColor, &u.CreatedAt)
+	query := `SELECT id, username, email, password_hash, avatar_color, team, created_at FROM users WHERE id = ?`
+	err := DB.QueryRow(query, id).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarColor, &u.Team, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -196,8 +222,8 @@ func GetUserByID(id string) (*User, error) {
 
 func GetUserByUsernameOrEmail(identifier string) (*User, error) {
 	u := &User{}
-	query := `SELECT id, username, email, password_hash, avatar_color, created_at FROM users WHERE username = ? OR email = ?`
-	err := DB.QueryRow(query, identifier, identifier).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarColor, &u.CreatedAt)
+	query := `SELECT id, username, email, password_hash, avatar_color, team, created_at FROM users WHERE username = ? OR email = ?`
+	err := DB.QueryRow(query, identifier, identifier).Scan(&u.ID, &u.Username, &u.Email, &u.PasswordHash, &u.AvatarColor, &u.Team, &u.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +233,14 @@ func GetUserByUsernameOrEmail(identifier string) (*User, error) {
 // AdminUsername is reserved: it cannot be registered, and the matching user
 // is the single admin account.
 const AdminUsername = "admin"
+
+// PublicTeam is the open-signup team (and its initial code). Accounts on
+// this team are trial accounts and are wiped after TrialDuration. The team's
+// signup code can be rotated by the admin without affecting its members.
+const PublicTeam = "PUBLIC"
+
+// TrialDuration is how long PUBLIC trial accounts live before being wiped.
+const TrialDuration = 30 * 24 * time.Hour
 
 // UnusablePasswordHash never matches any bcrypt comparison, locking the
 // account until a real hash is set (e.g. via `trbillo -set-admin`).
@@ -222,11 +256,195 @@ func EnsureAdminUser() (*User, bool, error) {
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, false, err
 	}
-	u, err = CreateUser(AdminUsername, "admin@trbillo.local", UnusablePasswordHash, "#ef4444")
+	u, err = CreateUser(AdminUsername, "admin@trbillo.local", UnusablePasswordHash, "#ef4444", "")
 	if err != nil {
 		return nil, false, err
 	}
 	return u, true, nil
+}
+
+// --- TEAM OPERATIONS ---
+
+// GetTeamNameByCode resolves a signup code to its team name.
+func GetTeamNameByCode(code string) (string, error) {
+	var name string
+	err := DB.QueryRow(`SELECT name FROM teams WHERE code = ?`, code).Scan(&name)
+	return name, err
+}
+
+// TeamExists reports whether a team with this name exists (case-insensitive,
+// to avoid confusable team names).
+func TeamExists(name string) (bool, error) {
+	var count int
+	err := DB.QueryRow(`SELECT COUNT(*) FROM teams WHERE name = ? COLLATE NOCASE`, name).Scan(&count)
+	return count > 0, err
+}
+
+// CodeInUse reports whether any team already uses this signup code.
+func CodeInUse(code string) (bool, error) {
+	var count int
+	err := DB.QueryRow(`SELECT COUNT(*) FROM teams WHERE code = ?`, code).Scan(&count)
+	return count > 0, err
+}
+
+func CreateTeam(name, code string) error {
+	_, err := DB.Exec(`INSERT INTO teams (name, code, created_at) VALUES (?, ?, ?)`, name, code, time.Now())
+	return err
+}
+
+// UpdateTeamCode rotates a team's signup code. Members are unaffected.
+func UpdateTeamCode(name, code string) error {
+	res, err := DB.Exec(`UPDATE teams SET code = ? WHERE name = ?`, code, name)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("team not found")
+	}
+	return nil
+}
+
+func DeleteTeam(name string) error {
+	res, err := DB.Exec(`DELETE FROM teams WHERE name = ?`, name)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("team not found")
+	}
+	return nil
+}
+
+// ListTeams returns every team with its code and user count, for the admin
+// teams view.
+func ListTeams() ([]*TeamRow, error) {
+	query := `SELECT t.name, t.code, t.created_at,
+	                 (SELECT COUNT(*) FROM users u WHERE u.team = t.name)
+	          FROM teams t
+	          ORDER BY t.name COLLATE NOCASE`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	teams := []*TeamRow{}
+	for rows.Next() {
+		t := &TeamRow{}
+		if err := rows.Scan(&t.Name, &t.Code, &t.CreatedAt, &t.UserCount); err != nil {
+			return nil, err
+		}
+		teams = append(teams, t)
+	}
+	return teams, nil
+}
+
+// UpdateUserTeam moves a user to a different team ('' = no team). created_at
+// is left untouched, so moving someone onto PUBLIC starts their trial clock
+// from their original signup, and moving them off PUBLIC makes them permanent.
+func UpdateUserTeam(userID, team string) error {
+	res, err := DB.Exec(`UPDATE users SET team = ? WHERE id = ?`, team, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("user not found")
+	}
+	return nil
+}
+
+// GetUserTeam returns the team a user belongs to ('' = no team).
+func GetUserTeam(userID string) (string, error) {
+	var team string
+	err := DB.QueryRow(`SELECT team FROM users WHERE id = ?`, userID).Scan(&team)
+	return team, err
+}
+
+// ListTeamUsers returns all users on the given team. Callers must not pass
+// the public or empty team — those have no member visibility.
+func ListTeamUsers(team string) ([]*User, error) {
+	query := `SELECT id, username, email, avatar_color, created_at
+	          FROM users WHERE team = ?
+	          ORDER BY username COLLATE NOCASE`
+	rows, err := DB.Query(query, team)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := []*User{}
+	for rows.Next() {
+		u := &User{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.AvatarColor, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+// CleanExpiredTrialUsers wipes PUBLIC-team trial accounts older than
+// TrialDuration, including any boards they own. Returns how many users were
+// removed.
+func CleanExpiredTrialUsers() (int, error) {
+	cutoff := time.Now().Add(-TrialDuration)
+	rows, err := DB.Query(`SELECT id, username FROM users WHERE team = ? AND created_at < ?`, PublicTeam, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	type expired struct{ id, username string }
+	var victims []expired
+	for rows.Next() {
+		var e expired
+		if err := rows.Scan(&e.id, &e.username); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		victims = append(victims, e)
+	}
+	rows.Close()
+
+	removed := 0
+	for _, v := range victims {
+		boardRows, err := DB.Query(`SELECT id FROM boards WHERE owner_id = ?`, v.id)
+		if err != nil {
+			return removed, err
+		}
+		var boardIDs []string
+		for boardRows.Next() {
+			var id string
+			if err := boardRows.Scan(&id); err != nil {
+				boardRows.Close()
+				return removed, err
+			}
+			boardIDs = append(boardIDs, id)
+		}
+		boardRows.Close()
+
+		for _, boardID := range boardIDs {
+			if err := DeleteBoard(boardID); err != nil {
+				return removed, fmt.Errorf("deleting board %s of expired trial user %s: %w", boardID, v.username, err)
+			}
+		}
+		if err := DeleteUser(v.id); err != nil {
+			return removed, fmt.Errorf("deleting expired trial user %s: %w", v.username, err)
+		}
+		log.Printf("Trial cleanup: removed expired PUBLIC account %q (%d boards)", v.username, len(boardIDs))
+		removed++
+	}
+	return removed, nil
 }
 
 func UpdateUserPassword(userID, passwordHash string) error {
@@ -271,7 +489,7 @@ func CountBoardsOwnedBy(userID string) (int, error) {
 // ListAllUsers returns every user with board ownership/membership counts,
 // for the admin users view.
 func ListAllUsers() ([]*AdminUserRow, error) {
-	query := `SELECT u.id, u.username, u.email, u.avatar_color, u.created_at,
+	query := `SELECT u.id, u.username, u.email, u.avatar_color, u.team, u.created_at,
 	                 (SELECT COUNT(*) FROM boards b WHERE b.owner_id = u.id),
 	                 (SELECT COUNT(*) FROM board_members bm WHERE bm.user_id = u.id)
 	          FROM users u
@@ -285,7 +503,7 @@ func ListAllUsers() ([]*AdminUserRow, error) {
 	users := []*AdminUserRow{}
 	for rows.Next() {
 		u := &AdminUserRow{}
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.AvatarColor, &u.CreatedAt, &u.BoardsOwned, &u.BoardsMemberOf); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.AvatarColor, &u.Team, &u.CreatedAt, &u.BoardsOwned, &u.BoardsMemberOf); err != nil {
 			return nil, err
 		}
 		users = append(users, u)

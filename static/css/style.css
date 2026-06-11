@@ -411,6 +411,15 @@ textarea {
   color: var(--text-secondary);
 }
 
+.auth-self-host {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--glass-border);
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ================= DASHBOARD LAYOUT ================= */
 
 .app-layout {
@@ -2151,4 +2160,74 @@ dialog::backdrop {
 
 .sidebar-panel.collapsed .admin-back-btn {
   display: none;
+}
+
+/* ================= INVITE CODES ================= */
+
+.admin-code-pill {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Outfit', sans-serif;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--text-primary);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.admin-code-public {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.admin-code-none {
+  color: var(--text-muted);
+}
+
+.admin-codes-hint {
+  margin-top: 12px;
+  max-width: 720px;
+}
+
+.admin-team-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+  color: var(--accent-cyan);
+}
+
+.admin-team-name-input,
+.admin-team-code-input {
+  width: 200px;
+}
+
+/* ================= EVAL ACCOUNT BANNER ================= */
+
+.eval-banner {
+  flex-shrink: 0;
+  padding: 10px 24px;
+  background: rgba(245, 158, 11, 0.12);
+  border-top: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.eval-banner strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.eval-banner a {
+  color: var(--accent-warning);
+  font-weight: 600;
+}
+
+/* The set-user-team modal reuses the team-pill styling for the table cell.
+   Make the inline team button in the users table sit with the other actions. */
+.admin-set-team-btn {
+  white-space: nowrap;
 }

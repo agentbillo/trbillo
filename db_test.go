@@ -14,7 +14,7 @@ func TestDatabaseOperations(t *testing.T) {
 	defer DB.Close()
 
 	// 2. Test User Creation
-	user, err := CreateUser("testuser", "test@example.com", "hashed_pwd_123", "#6366f1")
+	user, err := CreateUser("testuser", "test@example.com", "hashed_pwd_123", "#6366f1", "PUBLIC")
 	if err != nil {
 		t.Fatalf("Failed to create user: %v", err)
 	}
@@ -141,11 +141,11 @@ func TestAdminDBOperations(t *testing.T) {
 	}
 
 	// Seed two users and a board owned by alice
-	alice, err := CreateUser("alice", "alice@example.com", "h1", "#ffffff")
+	alice, err := CreateUser("alice", "alice@example.com", "h1", "#ffffff", "")
 	if err != nil {
 		t.Fatalf("Failed to create alice: %v", err)
 	}
-	bob, err := CreateUser("bob", "bob@example.com", "h2", "#000000")
+	bob, err := CreateUser("bob", "bob@example.com", "h2", "#000000", "")
 	if err != nil {
 		t.Fatalf("Failed to create bob: %v", err)
 	}
@@ -213,13 +213,160 @@ func TestAdminDBOperations(t *testing.T) {
 	}
 }
 
+func TestTeams(t *testing.T) {
+	if err := InitDB(":memory:"); err != nil {
+		t.Fatalf("Failed to initialize in-memory DB: %v", err)
+	}
+	defer DB.Close()
+
+	// The PUBLIC team is seeded with code PUBLIC
+	if name, err := GetTeamNameByCode("PUBLIC"); err != nil || name != PublicTeam {
+		t.Fatalf("Expected PUBLIC team seeded with code PUBLIC, got %q err=%v", name, err)
+	}
+
+	// Create a team whose code differs from its name
+	if err := CreateTeam("Snakkos", "LUNCHTIME"); err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+	if name, err := GetTeamNameByCode("LUNCHTIME"); err != nil || name != "Snakkos" {
+		t.Errorf("Code LUNCHTIME should resolve to Snakkos, got %q err=%v", name, err)
+	}
+	// Duplicate name and duplicate code both fail (UNIQUE constraints)
+	if err := CreateTeam("Snakkos", "OTHERCODE"); err == nil {
+		t.Errorf("Expected duplicate team name to fail")
+	}
+	if err := CreateTeam("Other", "LUNCHTIME"); err == nil {
+		t.Errorf("Expected duplicate code to fail")
+	}
+	// Case-insensitive name collision detection
+	if exists, _ := TeamExists("snakkos"); !exists {
+		t.Errorf("TeamExists should match case-insensitively")
+	}
+
+	// Users join teams (by name), not codes
+	pub, _ := CreateUser("trial", "trial@example.com", "h", "#fff", PublicTeam)
+	t1, _ := CreateUser("team1", "t1@example.com", "h", "#fff", "Snakkos")
+	t2, _ := CreateUser("team2", "t2@example.com", "h", "#fff", "Snakkos")
+	perm, _ := CreateUser("perm", "perm@example.com", "h", "#fff", "")
+
+	// Team listing includes codes and user counts
+	teams, err := ListTeams()
+	if err != nil {
+		t.Fatalf("ListTeams failed: %v", err)
+	}
+	counts := map[string]int{}
+	codes := map[string]string{}
+	for _, row := range teams {
+		counts[row.Name] = row.UserCount
+		codes[row.Name] = row.Code
+	}
+	if counts[PublicTeam] != 1 || counts["Snakkos"] != 2 || codes["Snakkos"] != "LUNCHTIME" {
+		t.Errorf("Team rows mismatch: counts=%v codes=%v", counts, codes)
+	}
+
+	// Rotating the code keeps members and team resolution intact
+	if err := UpdateTeamCode("Snakkos", "NEWCODE-7"); err != nil {
+		t.Fatalf("UpdateTeamCode failed: %v", err)
+	}
+	if _, err := GetTeamNameByCode("LUNCHTIME"); err == nil {
+		t.Errorf("Old code should no longer resolve")
+	}
+	if name, _ := GetTeamNameByCode("NEWCODE-7"); name != "Snakkos" {
+		t.Errorf("New code should resolve to Snakkos, got %q", name)
+	}
+	if err := UpdateTeamCode("NoSuchTeam", "WHATEVER"); err == nil {
+		t.Errorf("Expected error rotating code of missing team")
+	}
+
+	// Team visibility by name
+	team, err := ListTeamUsers("Snakkos")
+	if err != nil {
+		t.Fatalf("ListTeamUsers failed: %v", err)
+	}
+	if len(team) != 2 || team[0].ID != t1.ID || team[1].ID != t2.ID {
+		t.Errorf("Expected team1+team2 on Snakkos, got %d users", len(team))
+	}
+
+	// GetUserTeam round-trips
+	if tm, _ := GetUserTeam(pub.ID); tm != PublicTeam {
+		t.Errorf("Expected PUBLIC team for trial user, got %q", tm)
+	}
+	if tm, _ := GetUserTeam(perm.ID); tm != "" {
+		t.Errorf("Expected empty team for perm user, got %q", tm)
+	}
+
+	// Deleting a team keeps its users (and their membership string)
+	if err := DeleteTeam("Snakkos"); err != nil {
+		t.Fatalf("DeleteTeam failed: %v", err)
+	}
+	if _, err := GetUserByID(t1.ID); err != nil {
+		t.Errorf("Team user should survive team deletion: %v", err)
+	}
+	if tm, _ := GetUserTeam(t1.ID); tm != "Snakkos" {
+		t.Errorf("User should keep team name after deletion, got %q", tm)
+	}
+	if err := DeleteTeam("Snakkos"); err == nil {
+		t.Errorf("Expected error deleting a missing team")
+	}
+}
+
+func TestCleanExpiredTrialUsers(t *testing.T) {
+	if err := InitDB(":memory:"); err != nil {
+		t.Fatalf("Failed to initialize in-memory DB: %v", err)
+	}
+	defer DB.Close()
+
+	expired, _ := CreateUser("oldtrial", "old@example.com", "h", "#fff", PublicTeam)
+	fresh, _ := CreateUser("newtrial", "new@example.com", "h", "#fff", PublicTeam)
+	perm, _ := CreateUser("keeper", "keep@example.com", "h", "#fff", "")
+
+	// The expired trial user owns a board with the fresh user as a member
+	board, err := CreateBoard("Trial Board", "", expired.ID)
+	if err != nil {
+		t.Fatalf("CreateBoard failed: %v", err)
+	}
+	if err := AddBoardMember(board.ID, fresh.ID, "member"); err != nil {
+		t.Fatalf("AddBoardMember failed: %v", err)
+	}
+
+	// Backdate the expired user past the trial window; backdate perm too to
+	// prove only PUBLIC accounts are wiped
+	backdated := time.Now().Add(-TrialDuration - time.Hour)
+	for _, id := range []string{expired.ID, perm.ID} {
+		if _, err := DB.Exec(`UPDATE users SET created_at = ? WHERE id = ?`, backdated, id); err != nil {
+			t.Fatalf("Failed to backdate user: %v", err)
+		}
+	}
+
+	removed, err := CleanExpiredTrialUsers()
+	if err != nil {
+		t.Fatalf("CleanExpiredTrialUsers failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("Expected 1 user removed, got %d", removed)
+	}
+
+	if _, err := GetUserByID(expired.ID); err == nil {
+		t.Errorf("Expected expired trial user to be deleted")
+	}
+	if _, err := GetUserByID(fresh.ID); err != nil {
+		t.Errorf("Fresh trial user should survive: %v", err)
+	}
+	if _, err := GetUserByID(perm.ID); err != nil {
+		t.Errorf("Permanent user should survive even when old: %v", err)
+	}
+	if _, err := GetBoard(board.ID); err == nil {
+		t.Errorf("Expected expired user's board to be deleted")
+	}
+}
+
 func TestUpdateUserPasswordAndDeleteSessions(t *testing.T) {
 	if err := InitDB(":memory:"); err != nil {
 		t.Fatalf("Failed to initialize in-memory DB: %v", err)
 	}
 	defer DB.Close()
 
-	user, err := CreateUser("pwuser", "pw@example.com", "old_hash", "#6366f1")
+	user, err := CreateUser("pwuser", "pw@example.com", "old_hash", "#6366f1", "")
 	if err != nil {
 		t.Fatalf("Failed to create user: %v", err)
 	}

@@ -10,7 +10,10 @@ type User struct {
 	Email       string    `json:"email"`
 	PasswordHash string    `json:"-"`
 	AvatarColor string    `json:"avatar_color"`
-	CreatedAt   time.Time `json:"created_at"`
+	// Team is excluded from generic JSON payloads; team membership is
+	// exposed only via the /api/team endpoint and admin views.
+	Team      string    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // AdminUserRow is a user row in the admin users view.
@@ -19,9 +22,29 @@ type AdminUserRow struct {
 	Username       string    `json:"username"`
 	Email          string    `json:"email"`
 	AvatarColor    string    `json:"avatar_color"`
+	Team           string    `json:"team"`
 	CreatedAt      time.Time `json:"created_at"`
 	BoardsOwned    int       `json:"boards_owned"`
 	BoardsMemberOf int       `json:"boards_member_of"`
+}
+
+// MeResponse is the current-user payload from /api/auth/me. It augments the
+// user with their own team and trial status (a user may always see their own
+// team, unlike the generic User payload where Team is hidden).
+type MeResponse struct {
+	*User
+	Team           string     `json:"team"`
+	IsTrial        bool       `json:"is_trial"`
+	TrialExpiresAt *time.Time `json:"trial_expires_at,omitempty"`
+}
+
+// TeamRow is a team row in the admin teams view (the only place the
+// signup code is exposed).
+type TeamRow struct {
+	Name      string    `json:"name"`
+	Code      string    `json:"code"`
+	CreatedAt time.Time `json:"created_at"`
+	UserCount int       `json:"user_count"`
 }
 
 // AdminBoardRow is a board row in the admin boards view.

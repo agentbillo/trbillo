@@ -14,13 +14,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const adminState = {
     boards: [],
     users: [],
+    teams: [],
     boardsSearch: '',
     boardsOwner: '',
     boardsSort: { key: 'updated_at', dir: 'desc' },
     usersSearch: '',
     usersSort: { key: 'username', dir: 'asc' },
+    teamsSort: { key: 'name', dir: 'asc' },
     membersBoardId: null,
-    passwordUserId: null
+    passwordUserId: null,
+    codeTeamName: null,
+    teamUserId: null
   };
 
   // --- DOM ELEMENTS ---
@@ -36,6 +40,7 @@ document.addEventListener('DOMContentLoaded', () => {
     registerUsername: document.getElementById('register-username'),
     registerEmail: document.getElementById('register-email'),
     registerPassword: document.getElementById('register-password'),
+    registerInviteCode: document.getElementById('register-invite-code'),
 
     sidebar: document.getElementById('sidebar'),
     sidebarToggle: document.getElementById('sidebar-toggle'),
@@ -75,6 +80,9 @@ document.addEventListener('DOMContentLoaded', () => {
     inviteUsernameInput: document.getElementById('invite-username-input'),
     collaboratorsSection: document.getElementById('collaborators-section'),
     collaboratorsList: document.getElementById('collaborators-list'),
+    teamSection: document.getElementById('team-section'),
+    teamNameLabel: document.getElementById('team-name-label'),
+    teamList: document.getElementById('team-list'),
 
     boardSettingsModal: document.getElementById('board-settings-modal'),
     boardSettingsForm: document.getElementById('board-settings-form'),
@@ -160,6 +168,24 @@ document.addEventListener('DOMContentLoaded', () => {
     adminNewUsername: document.getElementById('admin-new-username'),
     adminNewEmail: document.getElementById('admin-new-email'),
     adminNewPassword: document.getElementById('admin-new-password'),
+    adminNewUserTeam: document.getElementById('admin-new-user-team'),
+    adminTeamsPane: document.getElementById('admin-teams-pane'),
+    adminNewTeamName: document.getElementById('admin-new-team-name'),
+    adminNewTeamCode: document.getElementById('admin-new-team-code'),
+    adminCreateTeamBtn: document.getElementById('admin-create-team-btn'),
+    adminTeamsCount: document.getElementById('admin-teams-count'),
+    adminTeamsTable: document.getElementById('admin-teams-table'),
+    adminTeamsTbody: document.getElementById('admin-teams-tbody'),
+    adminTeamCodeModal: document.getElementById('admin-team-code-modal'),
+    adminTeamCodeForm: document.getElementById('admin-team-code-form'),
+    adminTeamCodeTeam: document.getElementById('admin-team-code-team'),
+    adminTeamCodeInput: document.getElementById('admin-team-code-input'),
+    adminUserTeamModal: document.getElementById('admin-user-team-modal'),
+    adminUserTeamForm: document.getElementById('admin-user-team-form'),
+    adminUserTeamUsername: document.getElementById('admin-user-team-username'),
+    adminUserTeamSelect: document.getElementById('admin-user-team-select'),
+    evalBanner: document.getElementById('eval-banner'),
+    evalBannerDate: document.getElementById('eval-banner-date'),
     adminPasswordModal: document.getElementById('admin-password-modal'),
     adminPasswordForm: document.getElementById('admin-password-form'),
     adminPasswordUsername: document.getElementById('admin-password-username'),
@@ -199,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // Auth
-    register: (username, email, password) => api.request('/api/auth/register', 'POST', { username, email, password }),
+    register: (username, email, password, invite_code) => api.request('/api/auth/register', 'POST', { username, email, password, invite_code }),
     login: (username_or_email, password) => api.request('/api/auth/login', 'POST', { username_or_email, password }),
     logout: () => api.request('/api/auth/logout', 'POST'),
     me: () => api.request('/api/auth/me'),
@@ -245,16 +271,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Activities
     getActivities: (boardId) => api.request(`/api/boards/${boardId}/activities`),
 
+    // Team (users sharing the caller's invitation code)
+    team: () => api.request('/api/team'),
+
     // Admin
     admin: {
       boards: () => api.request('/api/admin/boards'),
       users: () => api.request('/api/admin/users'),
-      createUser: (username, email, password) => api.request('/api/admin/users', 'POST', { username, email, password }),
+      createUser: (username, email, password, team) => api.request('/api/admin/users', 'POST', { username, email, password, team }),
       deleteUser: (userId) => api.request(`/api/admin/users/${userId}`, 'DELETE'),
       setPassword: (userId, password) => api.request(`/api/admin/users/${userId}/password`, 'POST', { password }),
+      setUserTeam: (userId, team) => api.request(`/api/admin/users/${userId}/team`, 'POST', { team }),
       boardMembers: (boardId) => api.request(`/api/admin/boards/${boardId}/members`),
       removeBoardMember: (boardId, userId) => api.request(`/api/admin/boards/${boardId}/members/${userId}`, 'DELETE'),
-      setBoardOwner: (boardId, userId) => api.request(`/api/admin/boards/${boardId}/owner`, 'POST', { user_id: userId })
+      setBoardOwner: (boardId, userId) => api.request(`/api/admin/boards/${boardId}/owner`, 'POST', { user_id: userId }),
+      teams: () => api.request('/api/admin/teams'),
+      createTeam: (name, code) => api.request('/api/admin/teams', 'POST', { name, code }),
+      setTeamCode: (name, code) => api.request(`/api/admin/teams/${encodeURIComponent(name)}/code`, 'POST', { code }),
+      deleteTeam: (name) => api.request(`/api/admin/teams/${encodeURIComponent(name)}`, 'DELETE')
     }
   };
 
@@ -281,6 +315,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setupModalLightDismissFallback(el.adminCreateUserModal);
     setupModalLightDismissFallback(el.adminPasswordModal);
     setupModalLightDismissFallback(el.adminMembersModal);
+    setupModalLightDismissFallback(el.adminTeamCodeModal);
+    setupModalLightDismissFallback(el.adminUserTeamModal);
   }
 
   // Route to the right home view for the logged-in user
@@ -313,6 +349,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- VIEW TRANSITIONS ---
   function showAuth() {
+    // Tear down both WebSockets so a session that ends here (logout, expiry, or
+    // a 401) cannot leave a socket open under the old identity — otherwise the
+    // next user to log in this tab would receive the previous user's events.
+    if (window.wsClient) window.wsClient.disconnect();
+    if (window.userWsClient) window.userWsClient.disconnect();
+
     // Reset state variables
     state.user = null;
     state.boards = [];
@@ -343,6 +385,9 @@ document.addEventListener('DOMContentLoaded', () => {
     el.listsContainer.classList.add('hidden');
     el.activityPanel.classList.add('hidden');
 
+    // Hide the eval banner
+    el.evalBanner.classList.add('hidden');
+
     // Reset admin state
     state.readOnly = false;
     adminState.boards = [];
@@ -351,7 +396,9 @@ document.addEventListener('DOMContentLoaded', () => {
     el.createBoardBtn.classList.remove('hidden');
     el.myBoardsFilterLabel.classList.remove('hidden');
 
-    // Hide dashboard/admin and show auth screen
+    // Hide dashboard/admin and show auth screen (always on the login form)
+    el.registerForm.classList.add('hidden');
+    el.loginForm.classList.remove('hidden');
     el.authContainer.classList.remove('hidden');
     el.dashboardContainer.classList.add('hidden');
     el.adminContainer.classList.add('hidden');
@@ -367,11 +414,25 @@ document.addEventListener('DOMContentLoaded', () => {
     el.userAvatar.style.backgroundColor = state.user.avatar_color || '#6366f1';
     el.profileRole.textContent = 'Collaborator';
 
+    // Eval (trial) account banner
+    updateEvalBanner();
+
     // Connect to user-level WebSocket for global events
     window.userWsClient.connect();
 
     // Load Boards list
     await loadBoards();
+  }
+
+  // Show the trial-deletion banner for PUBLIC-team (eval) accounts.
+  function updateEvalBanner() {
+    if (state.user && state.user.is_trial && state.user.trial_expires_at) {
+      const d = new Date(state.user.trial_expires_at);
+      el.evalBannerDate.textContent = d.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
+      el.evalBanner.classList.remove('hidden');
+    } else {
+      el.evalBanner.classList.add('hidden');
+    }
   }
 
   async function loadBoards() {
@@ -702,14 +763,14 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     el.loginForm.classList.add('hidden');
     el.registerForm.classList.remove('hidden');
-    document.getElementById('auth-subtitle').textContent = 'Join team spaces instantly';
+    document.getElementById('auth-subtitle').textContent = 'Own your Kanban.';
   });
 
   el.showLogin.addEventListener('click', (e) => {
     e.preventDefault();
     el.registerForm.classList.add('hidden');
     el.loginForm.classList.remove('hidden');
-    document.getElementById('auth-subtitle').textContent = 'Elevate your team productivity';
+    document.getElementById('auth-subtitle').textContent = 'Own your Kanban.';
   });
 
   // Auth Submit
@@ -719,8 +780,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const username = el.registerUsername.value;
       const email = el.registerEmail.value;
       const password = el.registerPassword.value;
-      
-      await api.register(username, email, password);
+      const inviteCode = el.registerInviteCode.value.trim();
+
+      await api.register(username, email, password, inviteCode);
       // Auto login
       state.user = await api.login(username, password);
 
@@ -728,6 +790,7 @@ document.addEventListener('DOMContentLoaded', () => {
       el.registerUsername.value = '';
       el.registerEmail.value = '';
       el.registerPassword.value = '';
+      el.registerInviteCode.value = '';
 
       enterApp();
     } catch (err) {
@@ -819,12 +882,40 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Invite member open - fetch collaborators and show modal
+  // Invite member open - fetch team + collaborators and show modal
   el.inviteMemberBtn.addEventListener('click', async () => {
     // Clear previous state
     el.inviteUsernameInput.value = '';
     el.collaboratorsList.innerHTML = '';
     el.collaboratorsSection.classList.add('hidden');
+    el.teamList.innerHTML = '';
+    el.teamSection.classList.add('hidden');
+
+    // Fetch team members (users on the caller's team)
+    try {
+      const team = await api.team();
+      if (team && team.team && team.users) {
+        const candidates = team.users.filter(u =>
+          u.id !== state.user.id &&
+          !state.activeBoard.members.some(m => m.id === u.id)
+        );
+        if (candidates.length > 0) {
+          el.teamNameLabel.textContent = team.team;
+          candidates.forEach(user => {
+            const item = document.createElement('div');
+            item.className = 'collaborator-item';
+            item.innerHTML = `
+              <input type="checkbox" id="team-${user.id}" value="${user.username}" data-user-id="${user.id}">
+              <label for="team-${user.id}">${escapeHTML(user.username)}</label>
+            `;
+            el.teamList.appendChild(item);
+          });
+          el.teamSection.classList.remove('hidden');
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch team:', err);
+    }
 
     // Fetch collaborators
     try {
@@ -856,13 +947,16 @@ document.addEventListener('DOMContentLoaded', () => {
   el.inviteMemberForm.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    // Gather selected collaborators
-    const selectedCheckboxes = el.collaboratorsList.querySelectorAll('input[type="checkbox"]:checked');
-    const usersToInvite = Array.from(selectedCheckboxes).map(cb => cb.value);
+    // Gather selections from the team and collaborator lists (deduped — a
+    // teammate can also appear as a recent collaborator)
+    const selected = new Set();
+    el.teamList.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => selected.add(cb.value));
+    el.collaboratorsList.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => selected.add(cb.value));
+    const usersToInvite = Array.from(selected);
 
     // Also include manual input if provided
     const manualInput = el.inviteUsernameInput.value.trim();
-    if (manualInput) {
+    if (manualInput && !selected.has(manualInput)) {
       usersToInvite.push(manualInput);
     }
 
@@ -1853,15 +1947,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function refreshAdminData() {
     try {
-      const [boards, users] = await Promise.all([api.admin.boards(), api.admin.users()]);
+      const [boards, users, teams] = await Promise.all([api.admin.boards(), api.admin.users(), api.admin.teams()]);
       adminState.boards = boards || [];
       adminState.users = users || [];
+      adminState.teams = teams || [];
       renderAdminOwnerFilter();
       renderAdminBoards();
       renderAdminUsers();
+      renderAdminTeams();
+      renderAdminUserTeamOptions();
     } catch (err) {
       alert(`Failed to load admin data: ${err.message}`);
     }
+  }
+
+  // Keep the create-user modal's team selector in sync with existing teams
+  function renderAdminUserTeamOptions() {
+    const current = el.adminNewUserTeam.value;
+    el.adminNewUserTeam.innerHTML = '<option value="">(none — permanent account)</option>';
+    adminState.teams.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.name;
+      opt.textContent = t.name === 'PUBLIC' ? 'PUBLIC (30-day trial)' : t.name;
+      el.adminNewUserTeam.appendChild(opt);
+    });
+    el.adminNewUserTeam.value = adminState.teams.some(t => t.name === current) ? current : '';
   }
 
   function renderAdminOwnerFilter() {
@@ -1940,7 +2050,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderAdminUsers() {
     const q = adminState.usersSearch.trim().toLowerCase();
     let rows = adminState.users.filter(u =>
-      !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+      !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) ||
+      (u.team || '').toLowerCase().includes(q)
     );
     rows = sortRows(rows, adminState.usersSort);
     updateSortIndicators(el.adminUsersTable, adminState.usersSort);
@@ -1948,11 +2059,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     el.adminUsersTbody.innerHTML = '';
     if (rows.length === 0) {
-      el.adminUsersTbody.innerHTML = '<tr><td colspan="6" class="admin-empty">No users match.</td></tr>';
+      el.adminUsersTbody.innerHTML = '<tr><td colspan="7" class="admin-empty">No users match.</td></tr>';
       return;
     }
     rows.forEach(u => {
       const isAdminRow = u.username === 'admin';
+      const codeHTML = u.team
+        ? `<span class="admin-code-pill ${u.team === 'PUBLIC' ? 'admin-code-public' : ''}">${escapeHTML(u.team)}</span>`
+        : '<span class="admin-code-none">—</span>';
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>
@@ -1963,15 +2077,47 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </td>
         <td>${escapeHTML(u.email)}</td>
+        <td>${codeHTML}</td>
         <td class="admin-num">${u.boards_owned}</td>
         <td class="admin-num">${u.boards_member_of}</td>
         <td>${formatDate(u.created_at)}</td>
         <td class="admin-row-actions">
+          ${isAdminRow ? '' : `<button class="btn btn-secondary btn-sm admin-set-team-btn" data-id="${u.id}">Team</button>`}
           <button class="btn btn-secondary btn-sm admin-set-password-btn" data-id="${u.id}">Password</button>
           ${isAdminRow ? '' : `<button class="btn btn-danger btn-sm admin-delete-user-btn" data-id="${u.id}">Delete</button>`}
         </td>
       `;
       el.adminUsersTbody.appendChild(tr);
+    });
+  }
+
+  function renderAdminTeams() {
+    const rows = sortRows(adminState.teams, adminState.teamsSort);
+    updateSortIndicators(el.adminTeamsTable, adminState.teamsSort);
+    el.adminTeamsCount.textContent = `${rows.length} team${rows.length === 1 ? '' : 's'}`;
+
+    el.adminTeamsTbody.innerHTML = '';
+    if (rows.length === 0) {
+      el.adminTeamsTbody.innerHTML = '<tr><td colspan="5" class="admin-empty">No teams.</td></tr>';
+      return;
+    }
+    rows.forEach(t => {
+      const isPublic = t.name === 'PUBLIC';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <span class="admin-code-pill ${isPublic ? 'admin-code-public' : ''}">${escapeHTML(t.name)}</span>
+          ${isPublic ? '<span class="settings-member-role">open signup · 30-day trial</span>' : ''}
+        </td>
+        <td><code class="admin-team-code">${escapeHTML(t.code)}</code></td>
+        <td class="admin-num">${t.user_count}</td>
+        <td>${formatDate(t.created_at)}</td>
+        <td class="admin-row-actions">
+          <button class="btn btn-secondary btn-sm admin-edit-code-btn" data-name="${escapeHTML(t.name)}">Edit Code</button>
+          ${isPublic ? '' : `<button class="btn btn-danger btn-sm admin-delete-team-btn" data-name="${escapeHTML(t.name)}">Delete</button>`}
+        </td>
+      `;
+      el.adminTeamsTbody.appendChild(tr);
     });
   }
 
@@ -1982,6 +2128,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.adminTabs.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t === btn));
     el.adminBoardsPane.classList.toggle('hidden', btn.dataset.tab !== 'boards');
     el.adminUsersPane.classList.toggle('hidden', btn.dataset.tab !== 'users');
+    el.adminTeamsPane.classList.toggle('hidden', btn.dataset.tab !== 'teams');
   });
 
   // Search, filter, and sort
@@ -2012,6 +2159,73 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   el.adminBoardsTable.querySelector('thead').addEventListener('click', (e) => handleSortClick(e, adminState.boardsSort, renderAdminBoards));
   el.adminUsersTable.querySelector('thead').addEventListener('click', (e) => handleSortClick(e, adminState.usersSort, renderAdminUsers));
+  el.adminTeamsTable.querySelector('thead').addEventListener('click', (e) => handleSortClick(e, adminState.teamsSort, renderAdminTeams));
+
+  // Create team (name + signup code)
+  async function createTeam() {
+    const name = el.adminNewTeamName.value.trim();
+    const code = el.adminNewTeamCode.value.trim();
+    if (!name || !code) {
+      alert('A team needs both a name and a signup code.');
+      return;
+    }
+    try {
+      await api.admin.createTeam(name, code);
+      el.adminNewTeamName.value = '';
+      el.adminNewTeamCode.value = '';
+      await refreshAdminData();
+    } catch (err) {
+      alert(`Failed to create team: ${err.message}`);
+    }
+  }
+  el.adminCreateTeamBtn.addEventListener('click', createTeam);
+  [el.adminNewTeamName, el.adminNewTeamCode].forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createTeam();
+      }
+    });
+  });
+
+  // Team row actions: edit code / delete
+  el.adminTeamsTbody.addEventListener('click', async (e) => {
+    const editBtn = e.target.closest('.admin-edit-code-btn');
+    if (editBtn) {
+      adminState.codeTeamName = editBtn.dataset.name;
+      el.adminTeamCodeTeam.textContent = adminState.codeTeamName;
+      el.adminTeamCodeInput.value = '';
+      el.adminTeamCodeModal.showModal();
+      return;
+    }
+    const delBtn = e.target.closest('.admin-delete-team-btn');
+    if (delBtn) {
+      const name = delBtn.dataset.name;
+      const row = adminState.teams.find(t => t.name === name);
+      const inUse = row && row.user_count > 0
+        ? ` ${row.user_count} existing account(s) keep the team, but` : '';
+      if (!confirm(`Delete team ${name}?${inUse} nobody new will be able to sign up for it.`)) return;
+      try {
+        await api.admin.deleteTeam(name);
+        await refreshAdminData();
+      } catch (err) {
+        alert(`Failed to delete team: ${err.message}`);
+      }
+    }
+  });
+
+  // Change a team's signup code
+  el.adminTeamCodeForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.admin.setTeamCode(adminState.codeTeamName, el.adminTeamCodeInput.value.trim());
+      el.adminTeamCodeInput.value = '';
+      el.adminTeamCodeModal.close();
+      await refreshAdminData();
+    } catch (err) {
+      alert(`Failed to change code: ${err.message}`);
+    }
+  });
 
   // Boards table row actions
   el.adminBoardsTbody.addEventListener('click', (e) => {
@@ -2026,8 +2240,30 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // Populate the set-user-team modal's select with the existing teams
+  function renderAdminUserTeamSelect(current) {
+    el.adminUserTeamSelect.innerHTML = '<option value="">(none — permanent account)</option>';
+    adminState.teams.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.name;
+      opt.textContent = t.name === 'PUBLIC' ? 'PUBLIC (30-day trial)' : t.name;
+      el.adminUserTeamSelect.appendChild(opt);
+    });
+    el.adminUserTeamSelect.value = adminState.teams.some(t => t.name === current) ? current : '';
+  }
+
   // Users table row actions
   el.adminUsersTbody.addEventListener('click', async (e) => {
+    const teamBtn = e.target.closest('.admin-set-team-btn');
+    if (teamBtn) {
+      const user = adminState.users.find(u => u.id === teamBtn.dataset.id);
+      if (!user) return;
+      adminState.teamUserId = user.id;
+      el.adminUserTeamUsername.textContent = user.username;
+      renderAdminUserTeamSelect(user.team || '');
+      el.adminUserTeamModal.showModal();
+      return;
+    }
     const pwBtn = e.target.closest('.admin-set-password-btn');
     if (pwBtn) {
       const user = adminState.users.find(u => u.id === pwBtn.dataset.id);
@@ -2057,17 +2293,35 @@ document.addEventListener('DOMContentLoaded', () => {
     el.adminNewUsername.value = '';
     el.adminNewEmail.value = '';
     el.adminNewPassword.value = '';
+    el.adminNewUserTeam.value = '';
     el.adminCreateUserModal.showModal();
   });
 
   el.adminCreateUserForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
-      await api.admin.createUser(el.adminNewUsername.value.trim(), el.adminNewEmail.value.trim(), el.adminNewPassword.value);
+      await api.admin.createUser(
+        el.adminNewUsername.value.trim(),
+        el.adminNewEmail.value.trim(),
+        el.adminNewPassword.value,
+        el.adminNewUserTeam.value
+      );
       el.adminCreateUserModal.close();
       await refreshAdminData();
     } catch (err) {
       alert(`Failed to create user: ${err.message}`);
+    }
+  });
+
+  // Change a user's team
+  el.adminUserTeamForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.admin.setUserTeam(adminState.teamUserId, el.adminUserTeamSelect.value);
+      el.adminUserTeamModal.close();
+      await refreshAdminData();
+    } catch (err) {
+      alert(`Failed to change team: ${err.message}`);
     }
   });
 
@@ -2161,6 +2415,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.adminBackBtn.classList.remove('hidden');
     el.createBoardBtn.classList.add('hidden');
     el.myBoardsFilterLabel.classList.add('hidden');
+    el.evalBanner.classList.add('hidden'); // admin is never a trial account
 
     // Profile badge
     el.userName.textContent = state.user.username;
