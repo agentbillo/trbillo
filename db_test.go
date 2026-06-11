@@ -115,6 +115,104 @@ func TestDatabaseOperations(t *testing.T) {
 	}
 }
 
+func TestAdminDBOperations(t *testing.T) {
+	if err := InitDB(":memory:"); err != nil {
+		t.Fatalf("Failed to initialize in-memory DB: %v", err)
+	}
+	defer DB.Close()
+
+	// EnsureAdminUser creates the locked admin once, then is idempotent
+	admin, created, err := EnsureAdminUser()
+	if err != nil || !created {
+		t.Fatalf("Expected admin to be created, got created=%v err=%v", created, err)
+	}
+	if admin.Username != AdminUsername {
+		t.Errorf("Admin username mismatch: %s", admin.Username)
+	}
+	if _, createdAgain, err := EnsureAdminUser(); err != nil || createdAgain {
+		t.Errorf("Expected existing admin on second call, got created=%v err=%v", createdAgain, err)
+	}
+	stored, err := GetUserByID(admin.ID)
+	if err != nil {
+		t.Fatalf("Failed to fetch admin: %v", err)
+	}
+	if stored.PasswordHash != UnusablePasswordHash {
+		t.Errorf("Expected unusable password hash, got %q", stored.PasswordHash)
+	}
+
+	// Seed two users and a board owned by alice
+	alice, err := CreateUser("alice", "alice@example.com", "h1", "#ffffff")
+	if err != nil {
+		t.Fatalf("Failed to create alice: %v", err)
+	}
+	bob, err := CreateUser("bob", "bob@example.com", "h2", "#000000")
+	if err != nil {
+		t.Fatalf("Failed to create bob: %v", err)
+	}
+	board, err := CreateBoard("Owned Board", "desc", alice.ID)
+	if err != nil {
+		t.Fatalf("Failed to create board: %v", err)
+	}
+
+	// Admin listing queries
+	boards, err := ListAllBoards()
+	if err != nil {
+		t.Fatalf("ListAllBoards failed: %v", err)
+	}
+	if len(boards) != 1 || boards[0].OwnerUsername != "alice" || boards[0].MemberCount != 1 {
+		t.Errorf("ListAllBoards mismatch: %+v", boards)
+	}
+	users, err := ListAllUsers()
+	if err != nil {
+		t.Fatalf("ListAllUsers failed: %v", err)
+	}
+	if len(users) != 3 {
+		t.Fatalf("Expected 3 users, got %d", len(users))
+	}
+	for _, u := range users {
+		if u.Username == "alice" && (u.BoardsOwned != 1 || u.BoardsMemberOf != 1) {
+			t.Errorf("alice counts mismatch: owned=%d memberOf=%d", u.BoardsOwned, u.BoardsMemberOf)
+		}
+	}
+
+	// Reassign ownership to bob: bob becomes owner+member, alice stays as member
+	if err := UpdateBoardOwner(board.ID, bob.ID); err != nil {
+		t.Fatalf("UpdateBoardOwner failed: %v", err)
+	}
+	updated, err := GetBoard(board.ID)
+	if err != nil {
+		t.Fatalf("GetBoard failed: %v", err)
+	}
+	if updated.OwnerID != bob.ID {
+		t.Errorf("Owner not reassigned: %s", updated.OwnerID)
+	}
+	members, err := GetBoardMembers(board.ID)
+	if err != nil {
+		t.Fatalf("GetBoardMembers failed: %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("Expected 2 members after reassign, got %d", len(members))
+	}
+	if owned, _ := CountBoardsOwnedBy(bob.ID); owned != 1 {
+		t.Errorf("Expected bob to own 1 board, got %d", owned)
+	}
+
+	// Alice no longer owns anything and can be deleted; membership cascades
+	if owned, _ := CountBoardsOwnedBy(alice.ID); owned != 0 {
+		t.Errorf("Expected alice to own 0 boards, got %d", owned)
+	}
+	if err := DeleteUser(alice.ID); err != nil {
+		t.Fatalf("DeleteUser(alice) failed: %v", err)
+	}
+	members, _ = GetBoardMembers(board.ID)
+	if len(members) != 1 {
+		t.Errorf("Expected 1 member after alice deleted, got %d", len(members))
+	}
+	if err := DeleteUser(alice.ID); err == nil {
+		t.Errorf("Expected error deleting alice twice")
+	}
+}
+
 func TestUpdateUserPasswordAndDeleteSessions(t *testing.T) {
 	if err := InitDB(":memory:"); err != nil {
 		t.Fatalf("Failed to initialize in-memory DB: %v", err)

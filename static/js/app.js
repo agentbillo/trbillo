@@ -6,7 +6,21 @@ document.addEventListener('DOMContentLoaded', () => {
     boards: [],
     activeBoard: null,
     activeCard: null,
-    dnd: null
+    dnd: null,
+    readOnly: false
+  };
+
+  // Admin panel state (only used when logged in as the admin user)
+  const adminState = {
+    boards: [],
+    users: [],
+    boardsSearch: '',
+    boardsOwner: '',
+    boardsSort: { key: 'updated_at', dir: 'desc' },
+    usersSearch: '',
+    usersSort: { key: 'username', dir: 'asc' },
+    membersBoardId: null,
+    passwordUserId: null
   };
 
   // --- DOM ELEMENTS ---
@@ -123,7 +137,39 @@ document.addEventListener('DOMContentLoaded', () => {
     viewChecklistProgress: document.getElementById('view-checklist-progress'),
     viewChecklistProgressBar: document.getElementById('view-checklist-progress-bar'),
     viewChecklistItems: document.getElementById('view-checklist-items'),
-    viewCommentsList: document.getElementById('view-comments-list')
+    viewCommentsList: document.getElementById('view-comments-list'),
+
+    // Admin panel
+    adminContainer: document.getElementById('admin-container'),
+    adminTabs: document.getElementById('admin-tabs'),
+    adminLogoutBtn: document.getElementById('admin-logout-btn'),
+    adminBoardsPane: document.getElementById('admin-boards-pane'),
+    adminUsersPane: document.getElementById('admin-users-pane'),
+    adminBoardsSearch: document.getElementById('admin-boards-search'),
+    adminBoardsOwnerFilter: document.getElementById('admin-boards-owner-filter'),
+    adminBoardsCount: document.getElementById('admin-boards-count'),
+    adminBoardsTable: document.getElementById('admin-boards-table'),
+    adminBoardsTbody: document.getElementById('admin-boards-tbody'),
+    adminUsersSearch: document.getElementById('admin-users-search'),
+    adminUsersCount: document.getElementById('admin-users-count'),
+    adminUsersTable: document.getElementById('admin-users-table'),
+    adminUsersTbody: document.getElementById('admin-users-tbody'),
+    adminCreateUserBtn: document.getElementById('admin-create-user-btn'),
+    adminCreateUserModal: document.getElementById('admin-create-user-modal'),
+    adminCreateUserForm: document.getElementById('admin-create-user-form'),
+    adminNewUsername: document.getElementById('admin-new-username'),
+    adminNewEmail: document.getElementById('admin-new-email'),
+    adminNewPassword: document.getElementById('admin-new-password'),
+    adminPasswordModal: document.getElementById('admin-password-modal'),
+    adminPasswordForm: document.getElementById('admin-password-form'),
+    adminPasswordUsername: document.getElementById('admin-password-username'),
+    adminPasswordInput: document.getElementById('admin-password-input'),
+    adminMembersModal: document.getElementById('admin-members-modal'),
+    adminMembersTitle: document.getElementById('admin-members-title'),
+    adminMembersList: document.getElementById('admin-members-list'),
+    adminBackBtn: document.getElementById('admin-back-btn'),
+    myBoardsFilterLabel: document.querySelector('.boards-filter-label'),
+    profileRole: document.querySelector('.profile-role')
   };
 
   // --- API CALLS (AJAX) ---
@@ -197,14 +243,31 @@ document.addEventListener('DOMContentLoaded', () => {
     removeLabel: (cardId, labelId) => api.request(`/api/tasks/${cardId}/labels`, 'DELETE', { label_id: labelId }),
 
     // Activities
-    getActivities: (boardId) => api.request(`/api/boards/${boardId}/activities`)
+    getActivities: (boardId) => api.request(`/api/boards/${boardId}/activities`),
+
+    // Admin
+    admin: {
+      boards: () => api.request('/api/admin/boards'),
+      users: () => api.request('/api/admin/users'),
+      createUser: (username, email, password) => api.request('/api/admin/users', 'POST', { username, email, password }),
+      deleteUser: (userId) => api.request(`/api/admin/users/${userId}`, 'DELETE'),
+      setPassword: (userId, password) => api.request(`/api/admin/users/${userId}/password`, 'POST', { password }),
+      boardMembers: (boardId) => api.request(`/api/admin/boards/${boardId}/members`),
+      removeBoardMember: (boardId, userId) => api.request(`/api/admin/boards/${boardId}/members/${userId}`, 'DELETE'),
+      setBoardOwner: (boardId, userId) => api.request(`/api/admin/boards/${boardId}/owner`, 'POST', { user_id: userId })
+    }
   };
+
+  // The reserved admin account gets the admin panel instead of the dashboard
+  function isAdmin() {
+    return !!state.user && state.user.username === 'admin';
+  }
 
   // --- INITIALIZE APPLICATION ---
   async function initApp() {
     try {
       state.user = await api.me();
-      showDashboard();
+      enterApp();
     } catch (err) {
       showAuth();
     }
@@ -215,6 +278,18 @@ document.addEventListener('DOMContentLoaded', () => {
     setupModalLightDismissFallback(el.inviteMemberModal);
     setupModalLightDismissFallback(el.boardSettingsModal);
     setupModalLightDismissFallback(el.copyBoardModal);
+    setupModalLightDismissFallback(el.adminCreateUserModal);
+    setupModalLightDismissFallback(el.adminPasswordModal);
+    setupModalLightDismissFallback(el.adminMembersModal);
+  }
+
+  // Route to the right home view for the logged-in user
+  function enterApp() {
+    if (isAdmin()) {
+      showAdminPanel();
+    } else {
+      showDashboard();
+    }
   }
 
   // Fallback for browsers that do not support <dialog closedby="any">
@@ -268,9 +343,18 @@ document.addEventListener('DOMContentLoaded', () => {
     el.listsContainer.classList.add('hidden');
     el.activityPanel.classList.add('hidden');
 
-    // Hide dashboard and show auth screen
+    // Reset admin state
+    state.readOnly = false;
+    adminState.boards = [];
+    adminState.users = [];
+    el.adminBackBtn.classList.add('hidden');
+    el.createBoardBtn.classList.remove('hidden');
+    el.myBoardsFilterLabel.classList.remove('hidden');
+
+    // Hide dashboard/admin and show auth screen
     el.authContainer.classList.remove('hidden');
     el.dashboardContainer.classList.add('hidden');
+    el.adminContainer.classList.add('hidden');
   }
 
   async function showDashboard() {
@@ -281,6 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
     el.userName.textContent = state.user.username;
     el.userAvatar.textContent = state.user.username.substring(0, 2).toUpperCase();
     el.userAvatar.style.backgroundColor = state.user.avatar_color || '#6366f1';
+    el.profileRole.textContent = 'Collaborator';
 
     // Connect to user-level WebSocket for global events
     window.userWsClient.connect();
@@ -348,15 +433,24 @@ document.addEventListener('DOMContentLoaded', () => {
       // Update sidebar styling
       renderBoardsList();
 
+      // Admin gets a read-only view: no editing affordances at all
+      state.readOnly = isAdmin();
+
       // Setup Header details
       el.boardTitle.textContent = board.name;
       el.boardDesc.textContent = board.description || 'No description provided.';
       el.boardHeader.classList.remove('hidden');
-      el.inviteMemberBtn.classList.remove('hidden');
       el.activityLogToggle.classList.remove('hidden');
-      el.boardSettingsBtn.classList.remove('hidden');
-      el.copyBoardBtn.classList.remove('hidden');
-      if (board.owner_id === state.user.id) {
+      el.inviteMemberBtn.classList.toggle('hidden', state.readOnly);
+      el.boardSettingsBtn.classList.toggle('hidden', state.readOnly);
+      el.copyBoardBtn.classList.toggle('hidden', state.readOnly);
+      if (state.readOnly) {
+        el.deleteBoardBtn.classList.add('hidden');
+        el.leaveBoardBtn.classList.add('hidden');
+        const owner = board.members.find(m => m.id === board.owner_id);
+        el.boardOwner.textContent = owner ? `Owner: ${owner.username}` : '';
+        el.boardOwner.classList.toggle('hidden', !owner);
+      } else if (board.owner_id === state.user.id) {
         // User owns this board
         el.deleteBoardBtn.classList.remove('hidden');
         el.leaveBoardBtn.classList.add('hidden');
@@ -390,12 +484,17 @@ document.addEventListener('DOMContentLoaded', () => {
       // Connect to Real-time WebSocket channel
       window.wsClient.connect(boardId);
 
-      // Initialize Pointer Drag-and-Drop
-      if (state.dnd) state.dnd.destroy();
-      state.dnd = new KanbanDragAndDrop({
-        onCardDropped: handleCardDropped
-      });
-      state.dnd.init();
+      // Initialize Pointer Drag-and-Drop (viewers don't get to move cards)
+      if (state.dnd) {
+        state.dnd.destroy();
+        state.dnd = null;
+      }
+      if (!state.readOnly) {
+        state.dnd = new KanbanDragAndDrop({
+          onCardDropped: handleCardDropped
+        });
+        state.dnd.init();
+      }
 
     } catch (err) {
       alert(`Failed to load board: ${err.message}`);
@@ -416,6 +515,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderBoardLists() {
     el.listsContainer.innerHTML = '';
+    const ro = state.readOnly;
 
     state.activeBoard.lists.forEach(list => {
       const listCol = document.createElement('div');
@@ -425,14 +525,15 @@ document.addEventListener('DOMContentLoaded', () => {
       listCol.innerHTML = `
         <div class="list-header" data-id="${list.id}">
           <div class="list-title-wrap">
-            <input type="text" class="list-title-input" value="${escapeHTML(list.name)}">
+            <input type="text" class="list-title-input" value="${escapeHTML(list.name)}" ${ro ? 'readonly tabindex="-1"' : ''}>
             <span class="card-count" id="count-${list.id}">${list.tasks ? list.tasks.length : 0}</span>
           </div>
-          <button class="btn-icon-sm delete-list-btn" title="Delete List">✖</button>
+          ${ro ? '' : '<button class="btn-icon-sm delete-list-btn" title="Delete List">✖</button>'}
         </div>
         <div class="cards-container" data-list-id="${list.id}">
           <!-- Cards -->
         </div>
+        ${ro ? '' : `
         <div class="add-card-wrap">
           <button class="add-card-btn-trigger">+ Add a card</button>
           <div class="card-composer hidden">
@@ -445,11 +546,11 @@ document.addEventListener('DOMContentLoaded', () => {
               <button class="btn-icon-sm cancel-new-card">✖</button>
             </div>
           </div>
-        </div>
+        </div>`}
       `;
 
       const cardsContainer = listCol.querySelector('.cards-container');
-      
+
       // Render cards
       if (list.tasks) {
         list.tasks.forEach(task => {
@@ -461,7 +562,8 @@ document.addEventListener('DOMContentLoaded', () => {
       el.listsContainer.appendChild(listCol);
     });
 
-    // Append "Add List" block
+    // Append "Add List" block (not in read-only mode)
+    if (ro) return;
     const addListCol = document.createElement('div');
     addListCol.className = 'add-list-column';
     addListCol.innerHTML = `
@@ -576,7 +678,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="card-view-btn" type="button" title="View card" aria-label="View card">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
         </button>
-        <button class="card-edit-btn" type="button" title="Edit card" aria-label="Edit card">✎</button>
+        ${state.readOnly ? '' : '<button class="card-edit-btn" type="button" title="Edit card" aria-label="Edit card">✎</button>'}
       </div>
       ${labelsHTML}
       ${titleHTML}
@@ -621,13 +723,13 @@ document.addEventListener('DOMContentLoaded', () => {
       await api.register(username, email, password);
       // Auto login
       state.user = await api.login(username, password);
-      
+
       // Clear inputs
       el.registerUsername.value = '';
       el.registerEmail.value = '';
       el.registerPassword.value = '';
 
-      showDashboard();
+      enterApp();
     } catch (err) {
       alert(`Registration Failed: ${err.message}`);
     }
@@ -640,18 +742,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const password = el.loginPassword.value;
 
       state.user = await api.login(identifier, password);
-      
+
       // Clear inputs
       el.loginUsername.value = '';
       el.loginPassword.value = '';
 
-      showDashboard();
+      enterApp();
     } catch (err) {
       alert(`Login Failed: ${err.message}`);
     }
   });
 
-  el.logoutBtn.addEventListener('click', async () => {
+  async function doLogout() {
     try {
       await api.logout();
       window.wsClient.disconnect();
@@ -660,7 +762,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (err) {
       alert(`Logout Failed: ${err.message}`);
     }
-  });
+  }
+
+  el.logoutBtn.addEventListener('click', doLogout);
+  el.adminLogoutBtn.addEventListener('click', doLogout);
 
   // Sidebar expand / collapse
   el.sidebarToggle.addEventListener('click', () => {
@@ -1136,11 +1241,15 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // 8. Open Card Details Modal
+    // 8. Open Card Details Modal (read-only viewers get the view modal)
     const cardItem = e.target.closest('.card-item');
     if (cardItem && !cardItem.classList.contains('card-ghost') && !e.target.classList.contains('avatar-circle')) {
       const cardId = cardItem.dataset.id;
-      openCardDetailsModal(cardId);
+      if (state.readOnly) {
+        openCardViewModal(cardId);
+      } else {
+        openCardDetailsModal(cardId);
+      }
     }
   });
 
@@ -1732,6 +1841,350 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // --- ADMIN PANEL ---
+
+  async function showAdminPanel() {
+    el.authContainer.classList.add('hidden');
+    el.dashboardContainer.classList.add('hidden');
+    el.adminContainer.classList.remove('hidden');
+    applyTheme('dark');
+    await refreshAdminData();
+  }
+
+  async function refreshAdminData() {
+    try {
+      const [boards, users] = await Promise.all([api.admin.boards(), api.admin.users()]);
+      adminState.boards = boards || [];
+      adminState.users = users || [];
+      renderAdminOwnerFilter();
+      renderAdminBoards();
+      renderAdminUsers();
+    } catch (err) {
+      alert(`Failed to load admin data: ${err.message}`);
+    }
+  }
+
+  function renderAdminOwnerFilter() {
+    const current = adminState.boardsOwner;
+    const owners = [...new Set(adminState.boards.map(b => b.owner_username))].sort((a, b) => a.localeCompare(b));
+    el.adminBoardsOwnerFilter.innerHTML = '<option value="">All owners</option>';
+    owners.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      el.adminBoardsOwnerFilter.appendChild(opt);
+    });
+    el.adminBoardsOwnerFilter.value = owners.includes(current) ? current : '';
+    adminState.boardsOwner = el.adminBoardsOwnerFilter.value;
+  }
+
+  function compareRowValues(a, b, key) {
+    const va = a[key], vb = b[key];
+    if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+    if (key === 'created_at' || key === 'updated_at') return new Date(va) - new Date(vb);
+    return String(va).localeCompare(String(vb), undefined, { sensitivity: 'base' });
+  }
+
+  function sortRows(rows, sort) {
+    const sorted = [...rows].sort((a, b) => compareRowValues(a, b, sort.key));
+    if (sort.dir === 'desc') sorted.reverse();
+    return sorted;
+  }
+
+  function updateSortIndicators(tableEl, sort) {
+    tableEl.querySelectorAll('th.sortable').forEach(th => {
+      th.classList.toggle('sorted-asc', th.dataset.sort === sort.key && sort.dir === 'asc');
+      th.classList.toggle('sorted-desc', th.dataset.sort === sort.key && sort.dir === 'desc');
+    });
+  }
+
+  function formatDate(iso) {
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function renderAdminBoards() {
+    const q = adminState.boardsSearch.trim().toLowerCase();
+    let rows = adminState.boards.filter(b => {
+      if (adminState.boardsOwner && b.owner_username !== adminState.boardsOwner) return false;
+      if (!q) return true;
+      return b.name.toLowerCase().includes(q) ||
+        (b.description || '').toLowerCase().includes(q) ||
+        b.owner_username.toLowerCase().includes(q);
+    });
+    rows = sortRows(rows, adminState.boardsSort);
+    updateSortIndicators(el.adminBoardsTable, adminState.boardsSort);
+    el.adminBoardsCount.textContent = `${rows.length} of ${adminState.boards.length} boards`;
+
+    el.adminBoardsTbody.innerHTML = '';
+    if (rows.length === 0) {
+      el.adminBoardsTbody.innerHTML = '<tr><td colspan="6" class="admin-empty">No boards match.</td></tr>';
+      return;
+    }
+    rows.forEach(b => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><span class="admin-board-icon">${b.icon || '📋'}</span> ${escapeHTML(b.name)}</td>
+        <td>${escapeHTML(b.owner_username)}</td>
+        <td class="admin-num">${b.member_count}</td>
+        <td>${formatDate(b.updated_at)}</td>
+        <td>${formatDate(b.created_at)}</td>
+        <td class="admin-row-actions">
+          <button class="btn btn-secondary btn-sm admin-open-board-btn" data-id="${b.id}">Open</button>
+          <button class="btn btn-secondary btn-sm admin-board-members-btn" data-id="${b.id}">Members</button>
+        </td>
+      `;
+      el.adminBoardsTbody.appendChild(tr);
+    });
+  }
+
+  function renderAdminUsers() {
+    const q = adminState.usersSearch.trim().toLowerCase();
+    let rows = adminState.users.filter(u =>
+      !q || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)
+    );
+    rows = sortRows(rows, adminState.usersSort);
+    updateSortIndicators(el.adminUsersTable, adminState.usersSort);
+    el.adminUsersCount.textContent = `${rows.length} of ${adminState.users.length} users`;
+
+    el.adminUsersTbody.innerHTML = '';
+    if (rows.length === 0) {
+      el.adminUsersTbody.innerHTML = '<tr><td colspan="6" class="admin-empty">No users match.</td></tr>';
+      return;
+    }
+    rows.forEach(u => {
+      const isAdminRow = u.username === 'admin';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>
+          <div class="admin-user-cell">
+            <div class="avatar-circle" style="background-color: ${u.avatar_color}">${escapeHTML(u.username.substring(0, 2).toUpperCase())}</div>
+            <span>${escapeHTML(u.username)}</span>
+            ${isAdminRow ? '<span class="settings-member-role">Admin</span>' : ''}
+          </div>
+        </td>
+        <td>${escapeHTML(u.email)}</td>
+        <td class="admin-num">${u.boards_owned}</td>
+        <td class="admin-num">${u.boards_member_of}</td>
+        <td>${formatDate(u.created_at)}</td>
+        <td class="admin-row-actions">
+          <button class="btn btn-secondary btn-sm admin-set-password-btn" data-id="${u.id}">Password</button>
+          ${isAdminRow ? '' : `<button class="btn btn-danger btn-sm admin-delete-user-btn" data-id="${u.id}">Delete</button>`}
+        </td>
+      `;
+      el.adminUsersTbody.appendChild(tr);
+    });
+  }
+
+  // Tab switching
+  el.adminTabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.admin-tab');
+    if (!btn) return;
+    el.adminTabs.querySelectorAll('.admin-tab').forEach(t => t.classList.toggle('active', t === btn));
+    el.adminBoardsPane.classList.toggle('hidden', btn.dataset.tab !== 'boards');
+    el.adminUsersPane.classList.toggle('hidden', btn.dataset.tab !== 'users');
+  });
+
+  // Search, filter, and sort
+  el.adminBoardsSearch.addEventListener('input', () => {
+    adminState.boardsSearch = el.adminBoardsSearch.value;
+    renderAdminBoards();
+  });
+  el.adminBoardsOwnerFilter.addEventListener('change', () => {
+    adminState.boardsOwner = el.adminBoardsOwnerFilter.value;
+    renderAdminBoards();
+  });
+  el.adminUsersSearch.addEventListener('input', () => {
+    adminState.usersSearch = el.adminUsersSearch.value;
+    renderAdminUsers();
+  });
+
+  function handleSortClick(e, sort, render) {
+    const th = e.target.closest('th.sortable');
+    if (!th) return;
+    const key = th.dataset.sort;
+    if (sort.key === key) {
+      sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sort.key = key;
+      sort.dir = 'asc';
+    }
+    render();
+  }
+  el.adminBoardsTable.querySelector('thead').addEventListener('click', (e) => handleSortClick(e, adminState.boardsSort, renderAdminBoards));
+  el.adminUsersTable.querySelector('thead').addEventListener('click', (e) => handleSortClick(e, adminState.usersSort, renderAdminUsers));
+
+  // Boards table row actions
+  el.adminBoardsTbody.addEventListener('click', (e) => {
+    const openBtn = e.target.closest('.admin-open-board-btn');
+    if (openBtn) {
+      enterAdminBoardView(openBtn.dataset.id);
+      return;
+    }
+    const membersBtn = e.target.closest('.admin-board-members-btn');
+    if (membersBtn) {
+      openAdminMembersModal(membersBtn.dataset.id);
+    }
+  });
+
+  // Users table row actions
+  el.adminUsersTbody.addEventListener('click', async (e) => {
+    const pwBtn = e.target.closest('.admin-set-password-btn');
+    if (pwBtn) {
+      const user = adminState.users.find(u => u.id === pwBtn.dataset.id);
+      if (!user) return;
+      adminState.passwordUserId = user.id;
+      el.adminPasswordUsername.textContent = user.username;
+      el.adminPasswordInput.value = '';
+      el.adminPasswordModal.showModal();
+      return;
+    }
+    const delBtn = e.target.closest('.admin-delete-user-btn');
+    if (delBtn) {
+      const user = adminState.users.find(u => u.id === delBtn.dataset.id);
+      if (!user) return;
+      if (!confirm(`Delete user ${user.username}? Their comments and board memberships will be removed. This cannot be undone.`)) return;
+      try {
+        await api.admin.deleteUser(user.id);
+        await refreshAdminData();
+      } catch (err) {
+        alert(`Failed to delete user: ${err.message}`);
+      }
+    }
+  });
+
+  // Create user
+  el.adminCreateUserBtn.addEventListener('click', () => {
+    el.adminNewUsername.value = '';
+    el.adminNewEmail.value = '';
+    el.adminNewPassword.value = '';
+    el.adminCreateUserModal.showModal();
+  });
+
+  el.adminCreateUserForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.admin.createUser(el.adminNewUsername.value.trim(), el.adminNewEmail.value.trim(), el.adminNewPassword.value);
+      el.adminCreateUserModal.close();
+      await refreshAdminData();
+    } catch (err) {
+      alert(`Failed to create user: ${err.message}`);
+    }
+  });
+
+  // Set password
+  el.adminPasswordForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await api.admin.setPassword(adminState.passwordUserId, el.adminPasswordInput.value);
+      el.adminPasswordInput.value = '';
+      el.adminPasswordModal.close();
+    } catch (err) {
+      alert(`Failed to set password: ${err.message}`);
+    }
+  });
+
+  // Board members management modal
+  async function openAdminMembersModal(boardId) {
+    adminState.membersBoardId = boardId;
+    await renderAdminMembersModal();
+    el.adminMembersModal.showModal();
+  }
+
+  async function renderAdminMembersModal() {
+    const board = adminState.boards.find(b => b.id === adminState.membersBoardId);
+    el.adminMembersTitle.textContent = board ? `Members — ${board.name}` : 'Board Members';
+    let members = [];
+    try {
+      members = await api.admin.boardMembers(adminState.membersBoardId) || [];
+    } catch (err) {
+      alert(`Failed to load members: ${err.message}`);
+      return;
+    }
+    const ownerId = board ? board.owner_id : null;
+    members.sort((a, b) => (a.id === ownerId ? -1 : b.id === ownerId ? 1 : a.username.localeCompare(b.username)));
+
+    el.adminMembersList.innerHTML = '';
+    members.forEach(m => {
+      const isOwner = m.id === ownerId;
+      const li = document.createElement('li');
+      li.className = 'settings-member-item';
+      li.innerHTML = `
+        <div class="settings-member-info">
+          <div class="avatar-circle" style="background-color: ${m.avatar_color}">${escapeHTML(m.username.substring(0, 2).toUpperCase())}</div>
+          <span class="settings-member-name">${escapeHTML(m.username)}</span>
+          ${isOwner ? '<span class="settings-member-role">Owner</span>' : ''}
+        </div>
+        <div class="admin-member-actions">
+          ${isOwner ? '' : `
+            <button type="button" class="btn btn-secondary btn-sm admin-make-owner-btn" data-user-id="${m.id}">Make owner</button>
+            <button type="button" class="btn-icon-sm admin-remove-member-btn" data-user-id="${m.id}" title="Remove from board">✖</button>
+          `}
+        </div>
+      `;
+      el.adminMembersList.appendChild(li);
+    });
+  }
+
+  el.adminMembersList.addEventListener('click', async (e) => {
+    const makeOwnerBtn = e.target.closest('.admin-make-owner-btn');
+    const removeBtn = e.target.closest('.admin-remove-member-btn');
+    if (!makeOwnerBtn && !removeBtn) return;
+    const boardId = adminState.membersBoardId;
+    const board = adminState.boards.find(b => b.id === boardId);
+
+    try {
+      if (makeOwnerBtn) {
+        if (!confirm(`Transfer ownership of "${board ? board.name : 'this board'}"?`)) return;
+        const updated = await api.admin.setBoardOwner(boardId, makeOwnerBtn.dataset.userId);
+        if (board) board.owner_id = updated.owner_id;
+      } else {
+        if (!confirm('Remove this member from the board?')) return;
+        await api.admin.removeBoardMember(boardId, removeBtn.dataset.userId);
+      }
+      // Owner/member data changed: refresh the boards table and the open modal
+      const boards = await api.admin.boards();
+      adminState.boards = boards || [];
+      renderAdminOwnerFilter();
+      renderAdminBoards();
+      await renderAdminMembersModal();
+    } catch (err) {
+      alert(`Action failed: ${err.message}`);
+    }
+  });
+
+  // Open a board read-only from the admin panel
+  function enterAdminBoardView(boardId) {
+    // Give the sidebar the full board catalog so the admin can hop between boards
+    state.boards = adminState.boards.map(b => ({ ...b }));
+    el.adminContainer.classList.add('hidden');
+    el.dashboardContainer.classList.remove('hidden');
+    el.adminBackBtn.classList.remove('hidden');
+    el.createBoardBtn.classList.add('hidden');
+    el.myBoardsFilterLabel.classList.add('hidden');
+
+    // Profile badge
+    el.userName.textContent = state.user.username;
+    el.userAvatar.textContent = state.user.username.substring(0, 2).toUpperCase();
+    el.userAvatar.style.backgroundColor = state.user.avatar_color || '#ef4444';
+    el.profileRole.textContent = 'Administrator';
+
+    renderBoardsList();
+    selectBoard(boardId);
+  }
+
+  el.adminBackBtn.addEventListener('click', async () => {
+    window.wsClient.disconnect();
+    state.activeBoard = null;
+    el.boardHeader.classList.add('hidden');
+    el.listsContainer.classList.add('hidden');
+    el.welcomeMessage.classList.remove('hidden');
+    el.activityPanel.classList.add('hidden');
+    applyTheme('dark');
+    el.dashboardContainer.classList.add('hidden');
+    el.adminContainer.classList.remove('hidden');
+    await refreshAdminData();
+  });
+
   // --- REAL-TIME WEBSOCKET ROUTING ---
   document.addEventListener('trbillo-ws-message', async (event) => {
     const message = event.detail;
@@ -1858,7 +2311,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Re-draw board lists to align coordinates correctly
         // We only redraw if the user is NOT actively dragging
-        if (!state.dnd.activeDrag) {
+        if (!state.dnd || !state.dnd.activeDrag) {
           renderBoardLists();
         }
 

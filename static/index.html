@@ -73,6 +73,8 @@
           <button id="sidebar-toggle" class="btn-icon" aria-label="Toggle Sidebar">◀</button>
         </div>
 
+        <button id="admin-back-btn" class="btn btn-secondary admin-back-btn hidden">← Admin Panel</button>
+
         <nav class="sidebar-nav">
           <div class="nav-section">
             <div class="section-title">
@@ -180,6 +182,76 @@
           <!-- Dynamically populated activities -->
         </ul>
       </aside>
+    </div>
+
+    <!-- ADMIN PANEL -->
+    <div id="admin-container" class="admin-wrapper hidden">
+      <header class="admin-topbar glass-panel">
+        <div class="logo-wrap">
+          <span class="logo-icon">⚡</span>
+          <span class="logo-text">Trbillo</span>
+          <span class="admin-badge">admin</span>
+        </div>
+        <nav class="admin-tabs" id="admin-tabs">
+          <button class="admin-tab active" data-tab="boards">Boards</button>
+          <button class="admin-tab" data-tab="users">Users</button>
+        </nav>
+        <button id="admin-logout-btn" class="btn-icon" title="Logout" aria-label="Log Out">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        </button>
+      </header>
+
+      <main class="admin-main">
+        <!-- BOARDS PANE -->
+        <section id="admin-boards-pane" class="admin-pane">
+          <div class="admin-toolbar">
+            <input type="search" id="admin-boards-search" class="admin-search" placeholder="Search boards or owners...">
+            <select id="admin-boards-owner-filter" class="admin-filter-select">
+              <option value="">All owners</option>
+            </select>
+            <span id="admin-boards-count" class="admin-count"></span>
+          </div>
+          <div class="admin-table-wrap glass-panel">
+            <table class="admin-table" id="admin-boards-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="name">Board</th>
+                  <th class="sortable" data-sort="owner_username">Owner</th>
+                  <th class="sortable" data-sort="member_count">Members</th>
+                  <th class="sortable" data-sort="updated_at">Updated</th>
+                  <th class="sortable" data-sort="created_at">Created</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="admin-boards-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- USERS PANE -->
+        <section id="admin-users-pane" class="admin-pane hidden">
+          <div class="admin-toolbar">
+            <input type="search" id="admin-users-search" class="admin-search" placeholder="Search users...">
+            <span id="admin-users-count" class="admin-count"></span>
+            <button id="admin-create-user-btn" class="btn btn-primary btn-sm">+ New User</button>
+          </div>
+          <div class="admin-table-wrap glass-panel">
+            <table class="admin-table" id="admin-users-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="username">User</th>
+                  <th class="sortable" data-sort="email">Email</th>
+                  <th class="sortable" data-sort="boards_owned">Owns</th>
+                  <th class="sortable" data-sort="boards_member_of">Member of</th>
+                  <th class="sortable" data-sort="created_at">Joined</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="admin-users-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
     </div>
   </div>
 
@@ -493,6 +565,63 @@
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- ADMIN: CREATE USER MODAL -->
+  <dialog id="admin-create-user-modal" class="custom-dialog-sm glass-panel" closedby="any" aria-labelledby="admin-create-user-title">
+    <div class="dialog-header">
+      <h3 id="admin-create-user-title">Create User</h3>
+      <button onclick="document.getElementById('admin-create-user-modal').close()" class="btn-icon" aria-label="Close modal">✖</button>
+    </div>
+    <form id="admin-create-user-form" class="dialog-form">
+      <div class="form-group">
+        <label for="admin-new-username">Username</label>
+        <input type="text" id="admin-new-username" required placeholder="Username" maxlength="50" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="admin-new-email">Email Address</label>
+        <input type="email" id="admin-new-email" required placeholder="user@example.com" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="admin-new-password">Password</label>
+        <input type="password" id="admin-new-password" required placeholder="Min 6 characters" minlength="6" autocomplete="new-password">
+      </div>
+      <div class="btn-row-right">
+        <button type="button" onclick="document.getElementById('admin-create-user-modal').close()" class="btn btn-secondary">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create User</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ADMIN: SET PASSWORD MODAL -->
+  <dialog id="admin-password-modal" class="custom-dialog-sm glass-panel" closedby="any" aria-labelledby="admin-password-title">
+    <div class="dialog-header">
+      <h3 id="admin-password-title">Set Password</h3>
+      <button onclick="document.getElementById('admin-password-modal').close()" class="btn-icon" aria-label="Close modal">✖</button>
+    </div>
+    <form id="admin-password-form" class="dialog-form">
+      <div class="form-group">
+        <label for="admin-password-input">New password for <span id="admin-password-username" class="meta-highlight"></span></label>
+        <input type="password" id="admin-password-input" required placeholder="Min 6 characters" minlength="6" autocomplete="new-password">
+      </div>
+      <p class="form-hint">The user will be logged out of all existing sessions.</p>
+      <div class="btn-row-right">
+        <button type="button" onclick="document.getElementById('admin-password-modal').close()" class="btn btn-secondary">Cancel</button>
+        <button type="submit" class="btn btn-primary">Set Password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- ADMIN: BOARD MEMBERS MODAL -->
+  <dialog id="admin-members-modal" class="custom-dialog-sm glass-panel" closedby="any" aria-labelledby="admin-members-title">
+    <div class="dialog-header">
+      <h3 id="admin-members-title">Board Members</h3>
+      <button onclick="document.getElementById('admin-members-modal').close()" class="btn-icon" aria-label="Close modal">✖</button>
+    </div>
+    <div class="dialog-form">
+      <ul id="admin-members-list" class="settings-members-list"></ul>
+      <p class="form-hint">"Make owner" transfers ownership; the previous owner stays on the board as a member.</p>
+    </div>
   </dialog>
 
   <!-- Scripts -->

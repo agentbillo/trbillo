@@ -172,6 +172,21 @@ Drop in a newer bundle on the server and re-run `sudo ./install.sh`. The
 script stops the service, replaces the binary and static files, and
 restarts. The SQLite DB in `/var/lib/trbillo/` is untouched.
 
+## Enabling the admin account
+
+The server auto-creates a reserved `admin` user at startup, locked with
+an unusable password. To enable it (or rotate its password later):
+
+```bash
+sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
+  /opt/trbillo/trbillo -set-admin
+```
+
+Logging in as `admin` opens the admin panel: a read-only view into all
+boards plus user management (create/delete users, set passwords, remove
+board members, reassign board owners). See the project README for
+details.
+
 ## Resetting a user's password
 
 The binary doubles as an admin CLI:

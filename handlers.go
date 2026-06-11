@@ -288,6 +288,36 @@ func getUserID(r *http.Request) string {
 	return userID
 }
 
+// isAdminUserID reports whether the given user id belongs to the admin user.
+func isAdminUserID(userID string) bool {
+	u, err := GetUserByID(userID)
+	return err == nil && u.Username == AdminUsername
+}
+
+// Middleware: restrict a route to the admin user (use inside authMiddleware)
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isAdminUserID(getUserID(r)) {
+			writeError(w, http.StatusForbidden, "Admin access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
+// canViewBoard reports whether the user may read a board: members can, and
+// the admin user has read-only access to every board.
+func canViewBoard(boardID, userID string) (bool, error) {
+	isMember, err := IsBoardMember(boardID, userID)
+	if err != nil {
+		return false, err
+	}
+	if isMember {
+		return true, nil
+	}
+	return isAdminUserID(userID), nil
+}
+
 // --- INPUT VALIDATION CONSTANTS ---
 const (
 	MaxUsernameLen    = 50
@@ -313,6 +343,23 @@ type RegisterReq struct {
 	Password string `json:"password"`
 }
 
+// pickAvatarColor returns a random aesthetic avatar background color.
+func pickAvatarColor() string {
+	avatarColors := []string{
+		"#6366f1", // Indigo
+		"#3b82f6", // Blue
+		"#10b981", // Emerald
+		"#f59e0b", // Amber
+		"#ef4444", // Red
+		"#ec4899", // Pink
+		"#8b5cf6", // Violet
+		"#06b6d4", // Cyan
+	}
+	colorIndexBytes := make([]byte, 1)
+	crypto_rand.Read(colorIndexBytes)
+	return avatarColors[int(colorIndexBytes[0])%len(avatarColors)]
+}
+
 func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -327,6 +374,12 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	if req.Username == "" || req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "Username, email, and password are required")
+		return
+	}
+
+	// "admin" is reserved for the admin account
+	if strings.EqualFold(req.Username, AdminUsername) {
+		writeError(w, http.StatusBadRequest, "This username is reserved")
 		return
 	}
 
@@ -361,23 +414,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Pick a random aesthetic avatar background color
-	avatarColors := []string{
-		"#6366f1", // Indigo
-		"#3b82f6", // Blue
-		"#10b981", // Emerald
-		"#f59e0b", // Amber
-		"#ef4444", // Red
-		"#ec4899", // Pink
-		"#8b5cf6", // Violet
-		"#06b6d4", // Cyan
-	}
-	// Pick random avatar color using crypto/rand
-	colorIndexBytes := make([]byte, 1)
-	crypto_rand.Read(colorIndexBytes)
-	avatarColor := avatarColors[int(colorIndexBytes[0])%len(avatarColors)]
-
-	u, err := CreateUser(req.Username, req.Email, string(pwHash), avatarColor)
+	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor())
 	if err != nil {
 		writeError(w, http.StatusConflict, "Username or Email already exists")
 		return
@@ -520,13 +557,13 @@ func GetBoardHandler(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("id")
 	userID := getUserID(r)
 
-	// Check membership
-	isMember, err := IsBoardMember(boardID, userID)
+	// Check membership (admin gets read access to every board)
+	canView, err := canViewBoard(boardID, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to verify board membership")
 		return
 	}
-	if !isMember {
+	if !canView {
 		writeError(w, http.StatusForbidden, "Access denied: You are not a member of this board")
 		return
 	}
@@ -725,6 +762,12 @@ func AddBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
 	invitee, err := GetUserByUsernameOrEmail(req.UsernameOrEmail)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// The admin account is view-only and cannot join boards
+	if invitee.Username == AdminUsername {
+		writeError(w, http.StatusBadRequest, "The admin user cannot be added to boards")
 		return
 	}
 
@@ -1123,8 +1166,8 @@ func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isMember, err := IsBoardMember(list.BoardID, userID)
-	if err != nil || !isMember {
+	canView, err := canViewBoard(list.BoardID, userID)
+	if err != nil || !canView {
 		writeError(w, http.StatusForbidden, "Access denied")
 		return
 	}
@@ -1439,8 +1482,8 @@ func ListBoardLabelsHandler(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("id")
 	userID := getUserID(r)
 
-	isMember, err := IsBoardMember(boardID, userID)
-	if err != nil || !isMember {
+	canView, err := canViewBoard(boardID, userID)
+	if err != nil || !canView {
 		writeError(w, http.StatusForbidden, "Access denied")
 		return
 	}
@@ -1784,8 +1827,8 @@ func ListTaskCommentsHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Failed to fetch list details")
 		return
 	}
-	isMember, err := IsBoardMember(list.BoardID, userID)
-	if err != nil || !isMember {
+	canView, err := canViewBoard(list.BoardID, userID)
+	if err != nil || !canView {
 		writeError(w, http.StatusForbidden, "Access denied")
 		return
 	}
@@ -1805,8 +1848,8 @@ func GetBoardActivitiesHandler(w http.ResponseWriter, r *http.Request) {
 	boardID := r.PathValue("id")
 	userID := getUserID(r)
 
-	isMember, err := IsBoardMember(boardID, userID)
-	if err != nil || !isMember {
+	canView, err := canViewBoard(boardID, userID)
+	if err != nil || !canView {
 		writeError(w, http.StatusForbidden, "Access denied")
 		return
 	}
@@ -1863,8 +1906,8 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isMember, err := IsBoardMember(boardID, session.UserID)
-	if err != nil || !isMember {
+	canView, err := canViewBoard(boardID, session.UserID)
+	if err != nil || !canView {
 		writeError(w, http.StatusForbidden, "Access denied")
 		return
 	}
@@ -1892,6 +1935,257 @@ func UserWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ServeUserWS(w, r, session.UserID)
+}
+
+// --- ADMIN HANDLERS ---
+
+func AdminListBoardsHandler(w http.ResponseWriter, r *http.Request) {
+	boards, err := ListAllBoards()
+	if err != nil {
+		log.Printf("ListAllBoards error: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch boards")
+		return
+	}
+	writeJSON(w, http.StatusOK, boards)
+}
+
+func AdminListUsersHandler(w http.ResponseWriter, r *http.Request) {
+	users, err := ListAllUsers()
+	if err != nil {
+		log.Printf("ListAllUsers error: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to fetch users")
+		return
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func AdminGetBoardMembersHandler(w http.ResponseWriter, r *http.Request) {
+	boardID := r.PathValue("id")
+	if _, err := GetBoard(boardID); err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
+		return
+	}
+	members, err := GetBoardMembers(boardID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch members")
+		return
+	}
+	writeJSON(w, http.StatusOK, members)
+}
+
+func AdminCreateUserHandler(w http.ResponseWriter, r *http.Request) {
+	var req RegisterReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if req.Username == "" || req.Email == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "Username, email, and password are required")
+		return
+	}
+	if strings.EqualFold(req.Username, AdminUsername) {
+		writeError(w, http.StatusBadRequest, "This username is reserved")
+		return
+	}
+	if len(req.Username) > MaxUsernameLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Username must be %d characters or less", MaxUsernameLen))
+		return
+	}
+	if len(req.Email) > MaxEmailLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Email must be %d characters or less", MaxEmailLen))
+		return
+	}
+	if len(req.Password) < MinPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be at least %d characters", MinPasswordLen))
+		return
+	}
+	if len(req.Password) > MaxPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be %d characters or less", MaxPasswordLen))
+		return
+	}
+	if !emailRegex.MatchString(req.Email) {
+		writeError(w, http.StatusBadRequest, "Invalid email format")
+		return
+	}
+
+	pwHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+
+	u, err := CreateUser(req.Username, req.Email, string(pwHash), pickAvatarColor())
+	if err != nil {
+		writeError(w, http.StatusConflict, "Username or Email already exists")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, u)
+}
+
+type AdminPasswordReq struct {
+	Password string `json:"password"`
+}
+
+func AdminSetUserPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	targetID := r.PathValue("id")
+	u, err := GetUserByID(targetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	var req AdminPasswordReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+	if len(req.Password) < MinPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be at least %d characters", MinPasswordLen))
+		return
+	}
+	if len(req.Password) > MaxPasswordLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Password must be %d characters or less", MaxPasswordLen))
+		return
+	}
+
+	pwHash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+	if err := UpdateUserPassword(u.ID, string(pwHash)); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update password")
+		return
+	}
+	// Log the user out everywhere; if the admin reset its own password, keep
+	// the current session alive.
+	if !isAdminUserID(u.ID) {
+		if err := DeleteUserSessions(u.ID); err != nil {
+			log.Printf("Warning: failed to clear sessions for %s: %v", u.Username, err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("Password updated for %s", u.Username)})
+}
+
+func AdminDeleteUserHandler(w http.ResponseWriter, r *http.Request) {
+	targetID := r.PathValue("id")
+	u, err := GetUserByID(targetID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	if u.Username == AdminUsername {
+		writeError(w, http.StatusBadRequest, "The admin user cannot be deleted")
+		return
+	}
+
+	owned, err := CountBoardsOwnedBy(u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to check board ownership")
+		return
+	}
+	if owned > 0 {
+		writeError(w, http.StatusConflict, fmt.Sprintf("%s owns %d board(s). Reassign or delete those boards first.", u.Username, owned))
+		return
+	}
+
+	if err := DeleteUser(u.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to delete user")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": fmt.Sprintf("User %s deleted", u.Username)})
+}
+
+func AdminRemoveBoardMemberHandler(w http.ResponseWriter, r *http.Request) {
+	boardID := r.PathValue("id")
+	targetUserID := r.PathValue("user_id")
+
+	if _, err := GetBoard(boardID); err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
+		return
+	}
+
+	targetUser, err := GetUserByID(targetUserID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+
+	// RemoveBoardMember refuses to remove the board owner
+	if err := RemoveBoardMember(boardID, targetUserID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	_, _ = LogActivity(boardID, getUserID(r), AdminUsername, "remove_member", fmt.Sprintf("removed %s from the board", targetUser.Username))
+
+	broadcastBoardUpdate(boardID, "member_removed", map[string]interface{}{
+		"user_id": targetUserID,
+	})
+	userPayload, _ := json.Marshal(map[string]interface{}{
+		"type":     "removed_from_board",
+		"board_id": boardID,
+	})
+	HubInstance.BroadcastToUser(targetUserID, userPayload)
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Member removed successfully"})
+}
+
+type AdminSetOwnerReq struct {
+	UserID string `json:"user_id"`
+}
+
+func AdminSetBoardOwnerHandler(w http.ResponseWriter, r *http.Request) {
+	boardID := r.PathValue("id")
+
+	var req AdminSetOwnerReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	board, err := GetBoard(boardID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "Board not found")
+		return
+	}
+	newOwner, err := GetUserByID(req.UserID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "User not found")
+		return
+	}
+	if newOwner.Username == AdminUsername {
+		writeError(w, http.StatusBadRequest, "The admin user cannot own boards")
+		return
+	}
+	if board.OwnerID == newOwner.ID {
+		writeJSON(w, http.StatusOK, board)
+		return
+	}
+
+	if err := UpdateBoardOwner(boardID, newOwner.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to reassign owner")
+		return
+	}
+
+	_, _ = LogActivity(boardID, getUserID(r), AdminUsername, "change_owner", fmt.Sprintf("transferred board ownership to %s", newOwner.Username))
+
+	updatedBoard, _ := GetBoard(boardID)
+	broadcastBoardUpdate(boardID, "board_updated", map[string]interface{}{
+		"board": updatedBoard,
+	})
+	// Tell the new owner so the board shows up in their sidebar
+	userPayload, _ := json.Marshal(map[string]interface{}{
+		"type":  "added_to_board",
+		"board": updatedBoard,
+	})
+	HubInstance.BroadcastToUser(newOwner.ID, userPayload)
+
+	writeJSON(w, http.StatusOK, updatedBoard)
 }
 
 // Helper to broadcast event updates

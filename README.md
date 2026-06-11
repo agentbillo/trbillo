@@ -58,6 +58,35 @@ sudo -u trbillo DB_PATH=/var/lib/trbillo/trbillo.db \
 Safe to run while the server is up. For scripted use, pipe the new
 password as a single line on stdin.
 
+## Admin user
+
+The username `admin` is reserved: nobody can register it, and the server
+creates the account automatically at startup with an unusable password,
+so it stays locked until you explicitly enable it:
+
+```bash
+./trbillo -set-admin     # creates admin if needed, prompts for a password
+```
+
+(`-reset-password admin` also works once the account exists.)
+
+Logging in as `admin` opens an admin panel instead of the normal
+dashboard, with two tabs:
+
+- **Boards** — a sortable, filterable, searchable index of every board
+  with owner and member counts. From here the admin can open any board
+  in a strictly read-only view (no card/list editing, no drag-and-drop),
+  inspect each board's membership, remove members, and transfer board
+  ownership (the previous owner stays on the board as a member).
+- **Users** — a sortable, searchable table of every account. The admin
+  can create users, set passwords (logging that user out everywhere),
+  and delete users. Deleting a user who still owns boards is blocked
+  until their boards are reassigned or deleted.
+
+The admin account itself cannot be deleted, cannot own or join boards,
+and cannot edit board content — it is a management account, not a
+collaborator.
+
 ## Production deployment
 
 See [DEPLOY.md](DEPLOY.md) for the full guide: cross-compile, systemd

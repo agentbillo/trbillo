@@ -50,26 +50,22 @@ func computeStaticVersion(dir string) string {
 	return strconv.FormatInt(maxMtime, 10)
 }
 
-// resetPassword implements the -reset-password CLI mode: prompts for a new
-// password and replaces the stored hash for the given username or email.
-func resetPassword(dbPath, identifier string) error {
+// openCLIDB opens the database for one-off CLI modes that may run alongside
+// the live server.
+func openCLIDB(dbPath string) error {
 	if err := InitDB(dbPath); err != nil {
 		return fmt.Errorf("opening database at %s: %w", dbPath, err)
 	}
-	defer DB.Close()
 	// Wait out the running server's write lock instead of failing immediately.
 	if _, err := DB.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
 		return err
 	}
+	return nil
+}
 
-	u, err := GetUserByUsernameOrEmail(identifier)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("no user with username or email %q", identifier)
-	}
-	if err != nil {
-		return err
-	}
-
+// setPasswordFor prompts for a new password and replaces the stored hash for
+// the given user, logging them out everywhere.
+func setPasswordFor(u *User) error {
 	password, err := promptNewPassword()
 	if err != nil {
 		return err
@@ -94,6 +90,41 @@ func resetPassword(dbPath, identifier string) error {
 
 	fmt.Printf("Password updated for %s (%s); all existing sessions logged out.\n", u.Username, u.Email)
 	return nil
+}
+
+// resetPassword implements the -reset-password CLI mode.
+func resetPassword(dbPath, identifier string) error {
+	if err := openCLIDB(dbPath); err != nil {
+		return err
+	}
+	defer DB.Close()
+
+	u, err := GetUserByUsernameOrEmail(identifier)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("no user with username or email %q", identifier)
+	}
+	if err != nil {
+		return err
+	}
+	return setPasswordFor(u)
+}
+
+// setAdminPassword implements the -set-admin CLI mode: creates the admin
+// user if missing, then sets its password.
+func setAdminPassword(dbPath string) error {
+	if err := openCLIDB(dbPath); err != nil {
+		return err
+	}
+	defer DB.Close()
+
+	u, created, err := EnsureAdminUser()
+	if err != nil {
+		return fmt.Errorf("ensuring admin user exists: %w", err)
+	}
+	if created {
+		fmt.Println("Created admin user.")
+	}
+	return setPasswordFor(u)
 }
 
 // promptNewPassword reads the new password without echo when stdin is a
@@ -129,6 +160,8 @@ func promptNewPassword() (string, error) {
 func main() {
 	resetTarget := flag.String("reset-password", "",
 		"reset the password for the given username or email, then exit")
+	setAdmin := flag.Bool("set-admin", false,
+		"create the admin user if missing and set its password, then exit")
 	flag.Parse()
 
 	// Environment configuration
@@ -140,6 +173,13 @@ func main() {
 	dbPath := envOr("DB_PATH", "./trbillo.db")
 	staticDir := envOr("STATIC_DIR", "./static")
 
+	if *setAdmin {
+		if err := setAdminPassword(dbPath); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *resetTarget != "" {
 		if err := resetPassword(dbPath, *resetTarget); err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
@@ -153,6 +193,13 @@ func main() {
 		log.Fatalf("Failed to initialize SQLite database: %v", err)
 	}
 	log.Printf("SQLite Database initialized at %s", dbPath)
+
+	// Make sure the admin account exists (locked until -set-admin gives it a password)
+	if _, created, err := EnsureAdminUser(); err != nil {
+		log.Printf("Warning: could not ensure admin user exists: %v", err)
+	} else if created {
+		log.Printf("Admin user created (locked). Run 'trbillo -set-admin' to set its password.")
+	}
 
 	// Initialize Real-time WebSocket Hub
 	InitHub()
@@ -249,6 +296,22 @@ func main() {
 	mux.HandleFunc("GET "+p+"/api/boards/{id}/activities", authMiddleware(GetBoardActivitiesHandler))
 	mux.HandleFunc("GET "+p+"/api/ws", WebSocketHandler)
 	mux.HandleFunc("GET "+p+"/api/ws/user", UserWebSocketHandler)
+
+	// --- ADMIN ROUTING ---
+	adminRead := func(h http.HandlerFunc) http.HandlerFunc {
+		return authMiddleware(requireAdmin(h))
+	}
+	adminWrite := func(h http.HandlerFunc) http.HandlerFunc {
+		return csrfMiddleware(authMiddleware(requireAdmin(h)))
+	}
+	mux.HandleFunc("GET "+p+"/api/admin/boards", adminRead(AdminListBoardsHandler))
+	mux.HandleFunc("GET "+p+"/api/admin/users", adminRead(AdminListUsersHandler))
+	mux.HandleFunc("GET "+p+"/api/admin/boards/{id}/members", adminRead(AdminGetBoardMembersHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/users", adminWrite(AdminCreateUserHandler))
+	mux.HandleFunc("DELETE "+p+"/api/admin/users/{id}", adminWrite(AdminDeleteUserHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/users/{id}/password", adminWrite(AdminSetUserPasswordHandler))
+	mux.HandleFunc("DELETE "+p+"/api/admin/boards/{id}/members/{user_id}", adminWrite(AdminRemoveBoardMemberHandler))
+	mux.HandleFunc("POST "+p+"/api/admin/boards/{id}/owner", adminWrite(AdminSetBoardOwnerHandler))
 
 	// Start Server
 	addr := ":" + port

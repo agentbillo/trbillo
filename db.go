@@ -204,6 +204,31 @@ func GetUserByUsernameOrEmail(identifier string) (*User, error) {
 	return u, nil
 }
 
+// AdminUsername is reserved: it cannot be registered, and the matching user
+// is the single admin account.
+const AdminUsername = "admin"
+
+// UnusablePasswordHash never matches any bcrypt comparison, locking the
+// account until a real hash is set (e.g. via `trbillo -set-admin`).
+const UnusablePasswordHash = "*"
+
+// EnsureAdminUser creates the admin user with an unusable password hash if it
+// does not exist yet. Returns the user and whether it was just created.
+func EnsureAdminUser() (*User, bool, error) {
+	u, err := GetUserByUsernameOrEmail(AdminUsername)
+	if err == nil {
+		return u, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	u, err = CreateUser(AdminUsername, "admin@trbillo.local", UnusablePasswordHash, "#ef4444")
+	if err != nil {
+		return nil, false, err
+	}
+	return u, true, nil
+}
+
 func UpdateUserPassword(userID, passwordHash string) error {
 	res, err := DB.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID)
 	if err != nil {
@@ -217,6 +242,55 @@ func UpdateUserPassword(userID, passwordHash string) error {
 		return errors.New("user not found")
 	}
 	return nil
+}
+
+// DeleteUser removes a user; sessions, memberships, assignments, and comments
+// cascade. Fails (FK constraint) if the user still owns boards — callers must
+// check CountBoardsOwnedBy first to give a friendly error.
+func DeleteUser(userID string) error {
+	res, err := DB.Exec(`DELETE FROM users WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("user not found")
+	}
+	return nil
+}
+
+func CountBoardsOwnedBy(userID string) (int, error) {
+	var count int
+	err := DB.QueryRow(`SELECT COUNT(*) FROM boards WHERE owner_id = ?`, userID).Scan(&count)
+	return count, err
+}
+
+// ListAllUsers returns every user with board ownership/membership counts,
+// for the admin users view.
+func ListAllUsers() ([]*AdminUserRow, error) {
+	query := `SELECT u.id, u.username, u.email, u.avatar_color, u.created_at,
+	                 (SELECT COUNT(*) FROM boards b WHERE b.owner_id = u.id),
+	                 (SELECT COUNT(*) FROM board_members bm WHERE bm.user_id = u.id)
+	          FROM users u
+	          ORDER BY u.username COLLATE NOCASE`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := []*AdminUserRow{}
+	for rows.Next() {
+		u := &AdminUserRow{}
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.AvatarColor, &u.CreatedAt, &u.BoardsOwned, &u.BoardsMemberOf); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
 }
 
 // --- SESSION OPERATIONS ---
@@ -393,6 +467,79 @@ func ListUserBoards(userID string) ([]*Board, error) {
 		boards = append(boards, b)
 	}
 	return boards, nil
+}
+
+// parseBoardUpdatedAt parses the stored updated_at string, falling back to
+// the given created_at on null/empty/unparseable values.
+func parseBoardUpdatedAt(updatedAtStr sql.NullString, createdAt time.Time) time.Time {
+	if updatedAtStr.Valid && updatedAtStr.String != "" {
+		if parsed, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", updatedAtStr.String); err == nil {
+			return parsed
+		}
+		if parsed, err := time.Parse(time.RFC3339, updatedAtStr.String); err == nil {
+			return parsed
+		}
+	}
+	return createdAt
+}
+
+// ListAllBoards returns every board with owner username and member count,
+// for the admin boards view.
+func ListAllBoards() ([]*AdminBoardRow, error) {
+	query := `SELECT b.id, b.name, b.description, b.theme, COALESCE(b.icon, '📋'), b.owner_id, b.created_at, b.updated_at,
+	                 u.username,
+	                 (SELECT COUNT(*) FROM board_members bm WHERE bm.board_id = b.id)
+	          FROM boards b
+	          JOIN users u ON u.id = b.owner_id
+	          ORDER BY COALESCE(b.updated_at, b.created_at) DESC`
+	rows, err := DB.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	boards := []*AdminBoardRow{}
+	for rows.Next() {
+		b := &AdminBoardRow{}
+		var updatedAtStr sql.NullString
+		if err := rows.Scan(&b.ID, &b.Name, &b.Description, &b.Theme, &b.Icon, &b.OwnerID, &b.CreatedAt, &updatedAtStr, &b.OwnerUsername, &b.MemberCount); err != nil {
+			return nil, err
+		}
+		b.UpdatedAt = parseBoardUpdatedAt(updatedAtStr, b.CreatedAt)
+		boards = append(boards, b)
+	}
+	return boards, nil
+}
+
+// UpdateBoardOwner transfers board ownership: the new owner gains the 'owner'
+// member role (added to the board if needed) and the previous owner stays on
+// the board as a regular member.
+func UpdateBoardOwner(boardID, newOwnerID string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var oldOwnerID string
+	if err := tx.QueryRow(`SELECT owner_id FROM boards WHERE id = ?`, boardID).Scan(&oldOwnerID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`UPDATE boards SET owner_id = ? WHERE id = ?`, newOwnerID, boardID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO board_members (board_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)
+	                      ON CONFLICT(board_id, user_id) DO UPDATE SET role = 'owner'`, boardID, newOwnerID, time.Now()); err != nil {
+		return err
+	}
+	if oldOwnerID != newOwnerID {
+		if _, err := tx.Exec(`UPDATE board_members SET role = 'member' WHERE board_id = ? AND user_id = ?`, boardID, oldOwnerID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func AddBoardMember(boardID, userID, role string) error {

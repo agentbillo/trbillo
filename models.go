@@ -13,6 +13,31 @@ type User struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// AdminUserRow is a user row in the admin users view.
+type AdminUserRow struct {
+	ID             string    `json:"id"`
+	Username       string    `json:"username"`
+	Email          string    `json:"email"`
+	AvatarColor    string    `json:"avatar_color"`
+	CreatedAt      time.Time `json:"created_at"`
+	BoardsOwned    int       `json:"boards_owned"`
+	BoardsMemberOf int       `json:"boards_member_of"`
+}
+
+// AdminBoardRow is a board row in the admin boards view.
+type AdminBoardRow struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	Theme         string    `json:"theme"`
+	Icon          string    `json:"icon"`
+	OwnerID       string    `json:"owner_id"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	OwnerUsername string    `json:"owner_username"`
+	MemberCount   int       `json:"member_count"`
+}
+
 type Session struct {
 	Token     string    `json:"token"`
 	UserID    string    `json:"user_id"`
