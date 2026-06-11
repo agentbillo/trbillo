@@ -172,6 +172,13 @@ Drop in a newer bundle on the server and re-run `sudo ./install.sh`. The
 script stops the service, replaces the binary and static files, and
 restarts. The SQLite DB in `/var/lib/trbillo/` is untouched.
 
+Schema changes are applied automatically on startup (new columns are
+added in place; existing data is preserved). In particular, upgrading to
+the teams release adds a `team` column and seeds the `PUBLIC` team:
+existing accounts come through with **no team** (permanent, not subject
+to the trial wipe), and the reserved `admin` account is created locked —
+enable it with `-set-admin` (below).
+
 ## Enabling the admin account
 
 The server auto-creates a reserved `admin` user at startup, locked with

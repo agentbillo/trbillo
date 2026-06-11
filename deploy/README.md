@@ -34,6 +34,13 @@ That writes:
 Then enables and starts the service. The Go server listens on `localhost:8080`
 with `BASE_PATH=/trbillo`.
 
+After installing, enable the reserved `admin` account with `-set-admin`
+(see Useful commands below). Logging in as `admin` opens an admin panel for
+managing boards, users, and teams. Signups require an invitation code: the
+built-in `PUBLIC` code creates 30-day trial accounts, while admin-created
+teams have their own rotatable codes. See the project README for the full
+rundown of the admin panel, teams, and eval accounts.
+
 ## Wire up Caddy
 
 Add the two `handle` blocks from `caddy-fragment.conf` to your existing

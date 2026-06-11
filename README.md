@@ -15,6 +15,9 @@ binary, SQLite for storage, no JavaScript build step, no external services.
 - Invitation-code signups: an open `PUBLIC` code for 30-day trial
   accounts, plus admin-created teams with rotatable signup codes whose
   members can find each other when inviting people to boards
+- Reserved `admin` account with an admin panel: read-only view of every
+  board, user management (create/delete, set passwords, change teams),
+  team/code management, board-member and ownership administration
 - Themable UI (dark, light, autumn, spring)
 - Mountable under a URL subpath (e.g. `/trbillo`) via `BASE_PATH`, so it
   can sit alongside other apps on one domain
