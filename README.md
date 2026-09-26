@@ -38,7 +38,8 @@ Environment variables (all optional):
 | Env | Default | Purpose |
 |---|---|---|
 | `BASE_PATH` | empty | URL prefix to mount under (`/trbillo`, etc.) |
-| `PORT` | `8080` | TCP port to bind on `localhost` |
+| `BIND_HOST` | `127.0.0.1` | Interface to bind; `0.0.0.0` exposes the server to other hosts |
+| `PORT` | `8080` | TCP port to bind |
 | `DB_PATH` | `./trbillo.db` | SQLite file location |
 | `STATIC_DIR` | `./static` | Frontend assets directory |
 

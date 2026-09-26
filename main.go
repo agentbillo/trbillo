@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -169,6 +170,10 @@ func main() {
 	if basePath != "" && !strings.HasPrefix(basePath, "/") {
 		basePath = "/" + basePath
 	}
+	// Bind to loopback only by default so the server is reached through the
+	// reverse proxy, never directly. Set BIND_HOST (e.g. 0.0.0.0) to expose it.
+	// Not named HOST: some shells export that as the machine's hostname.
+	host := envOr("BIND_HOST", "127.0.0.1")
 	port := envOr("PORT", "8080")
 	dbPath := envOr("DB_PATH", "./trbillo.db")
 	staticDir := envOr("STATIC_DIR", "./static")
@@ -330,7 +335,7 @@ func main() {
 	mux.HandleFunc("DELETE "+p+"/api/admin/teams/{name}", adminWrite(AdminDeleteTeamHandler))
 
 	// Start Server
-	addr := ":" + port
+	addr := net.JoinHostPort(host, port)
 	log.Printf("Server listening on %s (base path: %q)", addr, basePath)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)

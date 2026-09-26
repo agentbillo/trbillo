@@ -236,7 +236,8 @@ Edit `/etc/systemd/system/trbillo.service` and then
 | Env | Default | Purpose |
 |---|---|---|
 | `BASE_PATH` | `/trbillo` | URL prefix the app serves under (empty = root) |
-| `PORT` | `8080` | TCP port the Go server binds to (localhost only) |
+| `BIND_HOST` | `127.0.0.1` | Interface the Go server binds to; leave unset behind a local reverse proxy |
+| `PORT` | `8080` | TCP port the Go server binds to |
 | `DB_PATH` | `/var/lib/trbillo/trbillo.db` | SQLite file location |
 | `STATIC_DIR` | `/opt/trbillo/static` | Frontend assets directory |
 

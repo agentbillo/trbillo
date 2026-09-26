@@ -84,6 +84,7 @@ and `systemctl daemon-reload && systemctl restart trbillo` to change them.
 | Env | Default in unit | Purpose |
 |---|---|---|
 | `BASE_PATH` | `/trbillo` | URL prefix the app serves under |
+| `BIND_HOST` | not set (`127.0.0.1`) | Interface the Go server binds to; leave unset behind a local reverse proxy |
 | `PORT` | `8080` | TCP port the Go server binds to |
 | `DB_PATH` | `/var/lib/trbillo/trbillo.db` | SQLite file location |
 | `STATIC_DIR` | `/opt/trbillo/static` | Frontend assets directory |
